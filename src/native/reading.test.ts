@@ -940,6 +940,9 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
     expect(getPage(s, NOTE, 0)!.text).toBe('Un');
     expect(getPage(s, NOTE, 1)!.text).toBe('Deux');
     expect(getPage(s, NOTE, 1)!.source).toBe('medium');
+    // The ORIGINAL read datetime travels with the page (user report
+    // 2026-08-03: the relocated pages must not show "now").
+    expect(getPage(s, NOTE, 0)!.at).toBe(1);
     // Fresh stamps at the DESTINATION (its own footer addresses).
     expect(getPage(s, NOTE, 0)!.hash).toBe(PA);
     expect(getPage(s, NOTE, 0)!.rev).toBe('a1');
