@@ -1,0 +1,6 @@
+# ne jamais committer la clé ni les sorties du banc
+.env
+key*.json
+runs/
+runs_warm/
+RATING_*.md
