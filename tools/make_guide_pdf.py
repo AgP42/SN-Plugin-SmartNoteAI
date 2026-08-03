@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Build the embedded User Guide PDF *and* its seeded transcripts.
+"""[SUPERSEDED 2026-08-03 by tools/import_guide_pdf.py — the manual is
+now designed externally; this generator is kept for reference only.]
+
+Build the embedded User Guide PDF *and* its seeded transcripts.
 
 ONE source of truth: docs/USER-GUIDE.md. This script
   - paginates it (cover, contents, then the chapters, images in place),

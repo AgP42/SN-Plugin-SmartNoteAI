@@ -78,8 +78,8 @@ describe('ensureUserGuide', () => {
     expect(Object.keys(doc.pages).length).toBeGreaterThanOrEqual(8);
     expect(doc.pages['0'].source).toBe('guide');
     // v0.88.1: page 0 is the COVER; the first chapter sits on page 2.
-    expect(doc.pages['0'].text).toContain('SmartNote AI - User Guide');
-    expect(doc.pages['2'].text).toContain('# 1. Welcome to SmartNote AI');
+    expect(doc.pages['0'].text).toContain('SmartNote AI · User Guide');
+    expect(doc.pages['2'].text).toContain('Core concepts');
     // docHash = byte length of the INSTALLED file → pdfCovered, never
     // "to sync", never billed.
     expect(doc.docHash).toBe('1234');
@@ -110,7 +110,7 @@ describe('ensureUserGuide', () => {
     core.setStamp(mockStore, seed.GUIDE_PDF_PATH, 'guide-rev:1');
     await seed.ensureUserGuide();
     expect(mockStore.docs[seed.GUIDE_PDF_PATH].pages['0'].text).toContain(
-      'SmartNote AI - User Guide',
+      'SmartNote AI · User Guide',
     );
     expect(core.getStamp(mockStore, seed.GUIDE_PDF_PATH)).not.toBe(
       'guide-rev:1',

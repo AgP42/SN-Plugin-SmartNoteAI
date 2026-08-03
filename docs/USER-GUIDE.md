@@ -1,3 +1,9 @@
+> **SUPERSEDED (2026-08-03).** The manual is now designed OUTSIDE the repo
+> (Claude Design) and imported with `tools/import_guide_pdf.py` — the
+> distributed PDF is `docs/SmartNoteAI-UserGuide.pdf`, the embedded asset
+> and the searchable transcripts are generated from it. This file stays as
+> a text reference only; editing it no longer changes the plugin.
+
 # SmartNote AI, User Guide
 
 > Revision 2 (v0.88.9, 01/08/2026). Image slots are marked `[IMAGE: file]`
