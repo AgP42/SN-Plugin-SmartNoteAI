@@ -34,6 +34,9 @@ export const captureBridge = (): CaptureDeps => ({
   saveCurrentNote: () => (PluginNoteAPI as any).saveCurrentNote(),
   // v0.82 (user): PDF handwritten-annotation (.mark) reading.
   getMarkPages: filePath => (PluginFileAPI as any).getMarkPages(filePath),
+  // Read-only query: page first (SDK param-order convention).
+  getElementCounts: (page, filePath) =>
+    (PluginFileAPI as any).getElementCounts(page, filePath),
   generateMarkThumbnails: (markPath, page, png, size) =>
     (PluginFileAPI as any).generateMarkThumbnails(markPath, page, png, size),
   compositePng: (base, overlay, out) =>

@@ -995,6 +995,50 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
   });
 });
 
+describe('blank-page skip (v1.0.2: no ink → no paid read)', () => {
+  it('a 0-element page is negative-cached with stamps, without any API call', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    const counts = new Map([[0, 5], [1, 0]]); // page 1 is blank
+    const deps = baseDeps({
+      getElementCounts: jest.fn(async (p: number) => ({result: counts.get(p)})),
+    });
+    route({ocr: () => ocrRes('du texte', GOOD), chat: () => chatRes('vision text')});
+    const out = await readNotePages(deps, 'k', 'sys', NOTE, [0, 1]);
+    expect(out.ok).toBe(true);
+    expect(out.read).toBe(2); // both covered — one paid, one free
+    expect(getPage(s, NOTE, 0)!.text).toContain('vision text');
+    const blank = getPage(s, NOTE, 1)!;
+    expect(blank.text).toBe(''); // the negative-cache marker
+    expect(blank.source).toBe('mistral-ocr');
+    expect(blank.hash).toBe(PB); // stamped: not re-read until the ink changes
+    expect(blank.rev).toBe('b1');
+    // The blank page never reached the network: only page 0's OCR+Vision.
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it('a probe failure falls through to the normal paid read', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    const deps = baseDeps({
+      getElementCounts: jest.fn(async () => {
+        throw new Error('sdk down');
+      }),
+    });
+    route({ocr: () => ocrRes('lu quand même', GOOD), chat: () => chatRes('v')});
+    const out = await readNotePages(deps, 'k', 'sys', NOTE, [0]);
+    expect(out.read).toBe(1);
+    expect(getPage(s, NOTE, 0)!.text.length).toBeGreaterThan(0);
+  });
+
+  it('absent probe (old bridge / fakes) reads every page normally', async () => {
+    setPageIds(storeState.store, NOTE, [PA, PB]);
+    route({ocr: () => ocrRes('normal', GOOD), chat: () => chatRes('v')});
+    const out = await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    expect(out.read).toBe(1);
+  });
+});
+
 describe('relocation survives the source remap (limbo, v1.0.1)', () => {
   // Device repro 2026-08-03 18:12: the tick remapped the SOURCE note
   // first ("0 moved, 3 dropped"), deleting the donor entries 400 ms

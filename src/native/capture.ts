@@ -64,6 +64,10 @@ export type CaptureDeps = {
     overlayPath: string,
     outPath: string,
   ) => Promise<unknown>;
+  // v1.0.2 blank-page skip: total element count of a page (0 = no ink,
+  // nothing to transcribe). Optional: absent → the probe is skipped and
+  // every page goes through the normal paid read.
+  getElementCounts?: (page: number, filePath: string) => Promise<unknown>;
   deleteFile: (path: string) => Promise<boolean>;
   fetchFn: (
     url: string,

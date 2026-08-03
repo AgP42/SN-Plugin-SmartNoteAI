@@ -594,6 +594,14 @@ export const readNotePages = async (
       .split('/')
       .pop()}`,
   );
+  const logBlanks = (): void => {
+    if (blankSkipped > 0) {
+      console.log(
+        '[SmartNoteAI.read]',
+        `${blankSkipped} blank page(s) marked without a paid read (no ink)`,
+      );
+    }
+  };
 
   const failed: number[] = [];
   const renderFailed: number[] = [];
@@ -603,6 +611,7 @@ export const readNotePages = async (
   let firstReason: string | undefined;
   let done = 0;
   let read = 0;
+  let blankSkipped = 0;
   const inFlight = new Set<Promise<void>>();
   // Stamp every new entry with its page's stable PAGEID. Going through
   // syncPageIds (not a raw read) so FORCE paths (Re-read) also get the
@@ -768,6 +777,31 @@ export const readNotePages = async (
       if (opts?.shouldStop?.() || opts?.signal?.aborted) {
         break;
       }
+      // BLANK-page skip (v1.0.2, user GO 2026-08-03): zero elements on the
+      // page = no ink, nothing to transcribe — negative-cache it exactly
+      // like a paid blank result (same store path: hash+rev stamps, eph and
+      // lock write-truth included) without paying the render+OCR+Vision
+      // round. Exact by construction (element count, not a pixel
+      // heuristic); any probe failure falls through to the normal read.
+      if (deps.getElementCounts !== undefined) {
+        try {
+          const raw = (await deps.getElementCounts(page, notePath)) as
+            | number
+            | {result?: unknown}
+            | null;
+          const n =
+            typeof raw === 'number' ? raw : (raw?.result as number | undefined);
+          if (n === 0) {
+            await store(page, '', 'mistral-ocr');
+            blankSkipped++;
+            done++;
+            opts?.onProgress?.(done, todo.length);
+            continue;
+          }
+        } catch {
+          // probe failed — read normally, never block a read on the probe
+        }
+      }
       // Device-bound render, sequential on purpose (skipSave: saved once above).
       // Rotation (v0.52): the manual "Redo rotated" degrees win; otherwise a
       // page the device flagged landscape is straightened by 90°.
@@ -834,6 +868,7 @@ export const readNotePages = async (
       }
     }
     await Promise.all(inFlight);
+    logBlanks();
   } finally {
     endLiveRead();
   }
