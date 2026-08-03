@@ -9,6 +9,7 @@
 import type {CaptureDeps} from './capture';
 import type {FetchFn} from '../core/model/types';
 import {
+  fnvHex,
   pagesNeedingRead,
   readNotePages,
   readPdf,
@@ -992,6 +993,81 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
     setDocLock(s, NOTE, true);
     expect(await pagesNeedingRead(baseDeps(), NOTE, [0, 1])).toEqual([]);
     expect(getPage(s, NOTE, 0)).toBeNull(); // nothing materialized
+  });
+});
+
+describe('vision "The page is blank." answers (collecte ①)', () => {
+  it('a bare blank statement is stored as the EMPTY marker, not as text', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    route({
+      ocr: () => ocrRes('', []), // OCR ran, saw nothing
+      chat: () => chatRes('The page is blank.'),
+    });
+    const out = await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    expect(out.ok).toBe(true);
+    const e = getPage(s, NOTE, 0)!;
+    expect(e.text).toBe(''); // negative-cache, not the sentence
+    expect(e.source).toBe('mistral-ocr');
+  });
+
+  it('real content containing the word blank is stored untouched', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    route({
+      ocr: () => ocrRes('notes', GOOD),
+      chat: () => chatRes('The page is blank at the top, then: appeler Karim'),
+    });
+    await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    expect(getPage(s, NOTE, 0)!.text).toContain('appeler Karim');
+  });
+});
+
+describe('unchanged pixels settle free (collecte ②: write-then-erase)', () => {
+  // The test renders go through the JS pipeline (bytesToBase64 of the PNG
+  // fixture) — the pixel tag is deterministic.
+  const PNG_B64 = require('../core/util/base64').bytesToBase64(
+    new Uint8Array([1, 2, 3]),
+  );
+  const TAG = `nh64:${fnvHex(PNG_B64)}`;
+
+  it('rev moved but pixels identical → rev re-stamped, zero API calls', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    upsertPage(s, NOTE, 0, entry(PA, {text: 'garde', rev: 'a0', vh: TAG, va: 'a0'}), 1);
+    upsertPage(s, NOTE, 1, entry(PB, {rev: 'b1'}), 1);
+    route({}); // any API call would throw 'unrouted'
+    const out = await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0, 1]);
+    expect(out.ok).toBe(true);
+    expect(out.read).toBe(0); // nothing billed
+    const e = getPage(s, NOTE, 0)!;
+    expect(e.text).toBe('garde'); // untouched
+    expect(e.rev).toBe('a1'); // re-baselined to the live address
+    expect(e.va).toBe('a1'); // the rev-keyed marker followed
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('pixels actually changed → normal paid re-read, and the new vh is stamped', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    upsertPage(s, NOTE, 0, entry(PA, {text: 'vieux', rev: 'a0', vh: 'nh64:autre'}), 1);
+    upsertPage(s, NOTE, 1, entry(PB, {rev: 'b1'}), 1);
+    route({ocr: () => ocrRes('nouveau texte', GOOD), chat: () => chatRes('nouveau texte vision')});
+    const out = await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0, 1]);
+    expect(out.read).toBe(1);
+    const e = getPage(s, NOTE, 0)!;
+    expect(e.text).toContain('nouveau');
+    expect(e.vh).toBe(TAG); // stamped from this run's render
+  });
+
+  it('force (explicit Redo) always re-reads, identical pixels or not', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    upsertPage(s, NOTE, 0, entry(PA, {text: 'garde', rev: 'a1', vh: TAG}), 1);
+    route({ocr: () => ocrRes('relu', GOOD), chat: () => chatRes('relu vision')});
+    const out = await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0], {force: true});
+    expect(out.read).toBe(1);
+    expect(getPage(s, NOTE, 0)!.text).toContain('relu');
   });
 });
 

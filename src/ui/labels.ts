@@ -25,6 +25,21 @@ export const SRC_LONG: Record<TranscriptSource, string> = {
   guide: 'Guide (shipped with the plugin)',
 };
 
+// Collecte 1.0.4 sujet ③: an entry with NO text is a blank-page marker
+// (locally detected for free since v1.0.3, or a paid read that saw
+// nothing). Naming Mistral as its "source" misled — there is no text to
+// have a source. One honest label for both origins.
+export const BLANK_SRC_LABEL = 'Blank page';
+export const BLANK_SRC_LONG = 'Blank page — no text stored';
+export const srcLabelFor = (e: {
+  text: string;
+  source: TranscriptSource;
+}): string => (e.text.trim().length === 0 ? BLANK_SRC_LABEL : SRC_LABEL[e.source]);
+export const srcLongFor = (e: {
+  text: string;
+  source: TranscriptSource;
+}): string => (e.text.trim().length === 0 ? BLANK_SRC_LONG : SRC_LONG[e.source]);
+
 // "15/07" — compact day for chips.
 export const fmtDay = (at: number): string => {
   const d = new Date(at);

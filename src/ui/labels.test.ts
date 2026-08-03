@@ -1,7 +1,7 @@
 // Shared UI vocabulary. Pins the provenance names the user decided on
 // (2026-07-12) and the date/name formatters the whole UI leans on.
 
-import {SRC_LABEL, SRC_LONG, fmtDay, fmtDateTime, baseName} from './labels';
+import {SRC_LABEL, SRC_LONG, fmtDay, fmtDateTime, baseName, srcLabelFor, srcLongFor, BLANK_SRC_LABEL} from './labels';
 
 describe('provenance labels', () => {
   it('keeps the user-decided names, one per source', () => {
@@ -48,5 +48,20 @@ describe('baseName', () => {
     expect(baseName('/x/archive.zip')).toBe('archive.zip');
     expect(baseName('bare.note')).toBe('bare');
     expect(baseName('')).toBe('');
+  });
+});
+
+describe('blank-aware provenance (collecte ③)', () => {
+  it('an empty entry is labelled Blank page — never a Mistral source', () => {
+    const blank = {text: '   ', source: 'mistral-ocr' as const};
+    expect(srcLabelFor(blank)).toBe(BLANK_SRC_LABEL);
+    expect(srcLongFor(blank)).toContain('no text stored');
+    expect(srcLongFor(blank)).not.toContain('Mistral');
+  });
+
+  it('a real transcript keeps its source label', () => {
+    const e = {text: 'du texte', source: 'medium' as const};
+    expect(srcLabelFor(e)).toBe('Mistral OCR+Vision');
+    expect(srcLongFor(e)).toBe(SRC_LONG.medium);
   });
 });

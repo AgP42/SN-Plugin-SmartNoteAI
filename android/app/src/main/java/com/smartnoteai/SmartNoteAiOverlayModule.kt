@@ -1310,6 +1310,36 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  // FNV-1a (32-bit) over a file's raw bytes, off the UI thread — the
+  // note-page pixel identity (v1.0.4). Matches the JS fnvHex constants;
+  // hex WITHOUT the 0x prefix, lowercase, unsigned.
+  @ReactMethod
+  fun hashFileFnv(path: String, promise: Promise) {
+    Thread {
+      try {
+        var h = 0x811c9dc5.toInt()
+        java.io.File(path).inputStream().use { ins ->
+          val buf = ByteArray(64 * 1024)
+          while (true) {
+            val n = ins.read(buf)
+            if (n < 0) break
+            for (i in 0 until n) {
+              h = h xor (buf[i].toInt() and 0xff)
+              h *= 0x01000193
+            }
+          }
+        }
+        val map = Arguments.createMap()
+        map.putBoolean("success", true)
+        map.putString("hash", java.lang.Integer.toHexString(h))
+        promise.resolve(map)
+      } catch (e: Throwable) {
+        promise.resolve(buildResult(success = false, code = "HASH_FAILED",
+            message = "${e.javaClass.simpleName}: ${e.message}"))
+      }
+    }.start()
+  }
+
   @ReactMethod
   fun readFileBase64(path: String, promise: Promise) {
     try {

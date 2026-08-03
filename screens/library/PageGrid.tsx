@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 
-import {SRC_LABEL} from '../../src/ui/labels';
+import {SRC_LABEL, BLANK_SRC_LABEL} from '../../src/ui/labels';
 import type {TranscriptSource as StoreSource} from '../../src/core/store/transcriptStore';
 import type {ExportFormat} from '../../src/native/exporter';
 import {makeTheme} from '../../src/ui/theme';
@@ -147,7 +147,11 @@ function PageGrid({
                 <View style={styles.pageTileHead}>
                   <Text style={styles.pageTileNum}>p.{t.page + 1}</Text>
                   <Text style={styles.pageTileSrc}>
-                    {t.src !== null ? SRC_LABEL[t.src] : ''}
+                    {t.src !== null
+                      ? t.snippet.trim().length === 0
+                        ? BLANK_SRC_LABEL
+                        : SRC_LABEL[t.src]
+                      : ''}
                   </Text>
                 </View>
                 <Text style={styles.pageTileText} numberOfLines={9}>

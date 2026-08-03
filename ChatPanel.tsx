@@ -108,7 +108,7 @@ import {
   type AgentDocBlock,
 } from './src/core/agents/agents';
 import {eurosTotal, FULL_PAGE_READ_CENTS} from './src/core/model/reader';
-import {SRC_LABEL, SRC_LONG, fmtDay, fmtDateTime, baseName} from './src/ui/labels';
+import {SRC_LABEL, fmtDay, fmtDateTime, baseName, srcLabelFor, srcLongFor} from './src/ui/labels';
 import {useArmedConfirm} from './src/ui/useArmedConfirm';
 import {gatherContext, parseScope} from './src/native/gatherContext';
 import {invalidateNoteCache} from './src/native/noteTranscripts';
@@ -737,7 +737,7 @@ export default function ChatPanel({
       if (pages.length === 1) {
         const e = getPage(store, cap.notePath, pages[0]);
         if (e !== null && e.text.trim().length > 0) {
-          setChip({label: SRC_LABEL[e.source], sub: fmtDay(e.at)});
+          setChip({label: srcLabelFor(e), sub: fmtDay(e.at)});
         } else {
           setChip({label: 'none'});
         }
@@ -781,7 +781,7 @@ export default function ChatPanel({
           const e = getPage(store, cap.notePath, p);
           const head =
             e !== null && e.text.trim().length > 0
-              ? `[ p.${p + 1} · ${SRC_LONG[e.source]} · ${fmtDay(e.at)} ]`
+              ? `[ p.${p + 1} · ${srcLongFor(e)} · ${fmtDay(e.at)} ]`
               : `[ p.${p + 1} · not read yet ]`;
           return `${head}\n${e?.text ?? ''}`.trim();
         });
@@ -800,7 +800,7 @@ export default function ChatPanel({
         setVoletEntry({
           text: e.text,
           // fmtDateTime (v0.53, user request: the hour matters too).
-          label: `${SRC_LONG[e.source]} · ${fmtDateTime(e.at)}`,
+          label: `${srcLongFor(e)} · ${fmtDateTime(e.at)}`,
           source: e.source,
         });
       } else {

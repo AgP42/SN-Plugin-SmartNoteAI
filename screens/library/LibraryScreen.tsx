@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
 
-import {SRC_LONG, fmtDateTime} from '../../src/ui/labels';
+import {fmtDateTime, srcLongFor} from '../../src/ui/labels';
 import {
   getPage,
   pagesOfDoc,
@@ -2112,7 +2112,7 @@ function LibraryScreen({
           ? {text: '', label: 'no transcript yet'}
           : {
               text: e.text,
-              label: `${SRC_LONG[e.source]} · ${fmtDateTime(e.at)}`,
+              label: `${srcLongFor(e)} · ${fmtDateTime(e.at)}`,
               low: e.low,
             },
       );

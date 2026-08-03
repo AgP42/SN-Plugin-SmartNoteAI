@@ -22,6 +22,7 @@ import {
   beginLiveRead,
   endLiveRead,
   readFileB64Native,
+  hashFileFnvNative,
 } from './capture';
 import type {PageText} from '../core/convo/composeContext';
 import {sendChat} from '../core/model/mistral';
@@ -38,6 +39,7 @@ import {nativeFileFetch, nativePostAvailable} from './nativePostFetch';
 import type {FetchFn} from '../core/model/types';
 import {bytesToBase64} from '../core/util/base64';
 import {loadStore, mutateStore, flushStore} from './transcriptStoreIo';
+import {isBlankAnswer} from '../core/model/blankAnswer';
 import {readSettings} from './settings';
 import {effectiveMode} from '../core/store/autoEngine';
 import {
@@ -601,6 +603,13 @@ export const readNotePages = async (
         `${blankSkipped} blank page(s) marked without a paid read (no ink)`,
       );
     }
+    if (unchangedSkipped > 0) {
+      console.log(
+        '[SmartNoteAI.read]',
+        `${unchangedSkipped} page(s) settled free (identical pixels — ` +
+          'the file moved, the ink did not)',
+      );
+    }
   };
 
   const failed: number[] = [];
@@ -612,6 +621,7 @@ export const readNotePages = async (
   let done = 0;
   let read = 0;
   let blankSkipped = 0;
+  let unchangedSkipped = 0;
   const inFlight = new Set<Promise<void>>();
   // Stamp every new entry with its page's stable PAGEID. Going through
   // syncPageIds (not a raw read) so FORCE paths (Re-read) also get the
@@ -672,6 +682,10 @@ export const readNotePages = async (
   const readOne = async (
     page: number,
     image: string | {pngPath: string},
+    // Pixel identity of the render this read is based on (v1.0.4) —
+    // stamped on the entry after a successful write so the NEXT rev
+    // move can be settled for free when the pixels did not change.
+    pixTag: string | null,
   ): Promise<void> => {
     // v0.67 native pipeline: with a PNG path, the body carries a
     // __FILE_B64__ placeholder that Kotlin fills at POST time — the
@@ -731,7 +745,7 @@ export const readNotePages = async (
     if (!v.ok) {
       visionRefused.push(page); // the request never landed
     }
-    if (v.ok && v.text.trim().length > 0) {
+    if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
       // Keep the OCR low-confidence words on the vision entry: they still
       // mark which words to double-check / add to the glossary.
       await store(page, v.text.trim(), 'medium', low);
@@ -741,7 +755,9 @@ export const readNotePages = async (
       await store(page, ocrText, 'mistral-ocr', low);
       ok = true;
     } else if (v.ok && ocrRan) {
-      // Genuine blank page (OCR ran and saw nothing + Vision empty).
+      // Genuine blank page: OCR ran and saw nothing, and Vision returned
+      // EMPTY or a bare "the page is blank" statement (collecte ① — that
+      // sentence used to be stored as a real transcript).
       // Negative-cache it (empty entry, rev stamped) so Auto doesn't
       // re-read it every pass until the ink changes (C3). Guard (audit
       // 2026-07-18): only when the OCR actually RAN — an OCR failure
@@ -757,6 +773,20 @@ export const readNotePages = async (
       if (firstReason === undefined) {
         firstReason = reason;
       }
+    } else if (pixTag !== null && stored.includes(page)) {
+      // Pixel identity of THIS text (v1.0.4). Lock-guarded like the PDF
+      // twin; stored.includes = the write actually landed (write-truth).
+      await mutateStore(st => {
+        if (isPageLocked(st, notePath, page)) {
+          return false;
+        }
+        const e = getPage(st, notePath, page);
+        if (e === null) {
+          return false;
+        }
+        e.vh = pixTag;
+        markDocTouched(notePath);
+      });
     }
     done++;
     opts?.onProgress?.(done, todo.length);
@@ -847,8 +877,47 @@ export const readNotePages = async (
         continue;
       }
       consecRenderFails = 0;
+      // v1.0.4 (collecte ②): the append-only rev moves on ANY edit — even
+      // write-then-erase that leaves the ink identical. The render is in
+      // hand and free: hash it, and if the stored entry carries the SAME
+      // pixel identity for the SAME page id, re-stamp the rev and skip
+      // the paid read entirely. Never on force (an explicit Redo must
+      // re-read), never on a locked page (frozen means frozen).
+      const pixTag = await notePixelTag(img).catch(() => null);
+      if (pixTag !== null && opts?.force !== true) {
+        const sNow = await loadStore();
+        const cur = getPage(sNow, notePath, page);
+        if (
+          cur !== null &&
+          cur.lock !== true &&
+          cur.hash === (pageIds.get(page) ?? '\u0000') &&
+          cur.vh === pixTag
+        ) {
+          await mutateStore(st => {
+            if (isPageLocked(st, notePath, page)) {
+              return false;
+            }
+            const e = getPage(st, notePath, page);
+            if (e === null || e.hash !== (pageIds.get(page) ?? '\u0000')) {
+              return false;
+            }
+            e.rev = pageRevs.get(page);
+            if (e.va !== undefined) {
+              e.va = pageRevs.get(page); // the rev-keyed marker follows
+            }
+            markDocTouched(notePath);
+          });
+          unchangedSkipped++;
+          done++;
+          opts?.onProgress?.(done, todo.length);
+          if (typeof img !== 'string') {
+            await deps.deleteFile(img.pngPath).catch(() => false);
+          }
+          continue;
+        }
+      }
       // Network read joins the sliding window; renders continue meanwhile.
-      const p = readOne(page, img).finally(() => inFlight.delete(p));
+      const p = readOne(page, img, pixTag).finally(() => inFlight.delete(p));
       inFlight.add(p);
       if (inFlight.size >= PARALLEL_READS) {
         await Promise.race(inFlight);
@@ -1334,13 +1403,31 @@ export const getMarkPagesList = async (
 // Mistral call is ever needed to decide whether a page changed. Round 3
 // redesign: the global .mark byte size was ONE identity for ALL pages (one
 // new stroke re-billed every annotated page, and sizes can repeat).
-export const pageMarkHash = (imageB64: string): string => {
+export const fnvHex = (s: string): string => {
   let h = 0x811c9dc5;
-  for (let i = 0; i < imageB64.length; i++) {
-    h ^= imageB64.charCodeAt(i);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
-  return `mh:${(h >>> 0).toString(16)}`;
+  return (h >>> 0).toString(16);
+};
+
+export const pageMarkHash = (imageB64: string): string => `mh:${fnvHex(imageB64)}`;
+
+// NOTE-page pixel identity (v1.0.4, collecte ②: write-then-erase used to
+// re-bill an unchanged page — the append-only rev moves on ANY edit even
+// when the ink ends up identical). Two domains, tagged apart: the JS
+// pipeline hashes the base64 string, the native pipeline hashes the PNG
+// bytes on the Kotlin side (they never mix on one device — the pipeline
+// choice is constant per binary). null = no tag, the check is skipped.
+export const notePixelTag = async (
+  img: string | {pngPath: string},
+): Promise<string | null> => {
+  if (typeof img === 'string') {
+    return img.length > 0 ? `nh64:${fnvHex(img)}` : null;
+  }
+  const h = await hashFileFnvNative(img.pngPath);
+  return h === null ? null : `nh:${h}`;
 };
 
 // Render a PDF page to a base64 PNG; when `annotated`, composite the .mark
@@ -1441,7 +1528,7 @@ export const readPdfPageVision = async (
       hint,
       opts?.signal,
     );
-    if (v.ok && v.text.trim().length > 0) {
+    if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
       const wrote = await upsertTranscript(
         pdfPath,
         page,
@@ -1710,7 +1797,7 @@ const visionPassPdf = async (
         cur?.text ?? '',
         opts?.signal,
       );
-      if (v.ok && v.text.trim().length > 0) {
+      if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
         const wrote = await upsertTranscript(
           pdfPath,
           page,

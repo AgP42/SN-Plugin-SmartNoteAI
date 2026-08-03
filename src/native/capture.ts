@@ -125,6 +125,28 @@ const ioNative = (): {
   readFileBase64?: (p: string) => Promise<{success?: boolean; data?: string}>;
 } => require('react-native').NativeModules.SmartNoteAiOverlay ?? {};
 
+// FNV-1a of a file's RAW BYTES via the native module — hashing a render
+// without pulling ~1 MB of base64 through the JS bridge (v1.0.4, the
+// note pixel identity). null when the method is absent (old binary) or
+// fails: callers skip the free check, never block a read on it.
+export const hashFileFnvNative = async (
+  path: string,
+): Promise<string | null> => {
+  try {
+    const m = (require('react-native').NativeModules.SmartNoteAiOverlay ??
+      {}) as {
+      hashFileFnv?: (p: string) => Promise<{success?: boolean; hash?: string}>;
+    };
+    if (m.hashFileFnv === undefined) {
+      return null;
+    }
+    const r = await m.hashFileFnv(path);
+    return r?.success === true && typeof r.hash === 'string' ? r.hash : null;
+  } catch {
+    return null;
+  }
+};
+
 export const readFileB64Native = async (
   path: string,
 ): Promise<string | null> => {
