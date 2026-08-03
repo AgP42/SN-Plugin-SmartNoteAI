@@ -411,9 +411,36 @@ export const looksLikePageId = (h: string): boolean => /^P\d{14,}/.test(h);
    notes follow the PAGEID (it travels with the page, even across notes);
    PDFs match on file name + printed byte length. ---- */
 
+// LIMBO (v1.0.1, device repro 2026-08-03 18:12): entries the remap drops
+// because their PAGEID left the note are PARKED here (in-memory, capped)
+// instead of vanishing. The tick's doc order is arbitrary — when the
+// SOURCE note of a page move is remapped before the DESTINATION syncs,
+// the donor entry was deleted 400 ms before the relocation looked for
+// it, and 3 pages were re-billed. Same-session only by design: no
+// schema, no persistence, no backup impact.
+const LIMBO_CAP = 200;
+const limbo = new Map<string, PageEntry>();
+const parkInLimbo = (e: PageEntry): void => {
+  if (e.eph === true || !looksLikePageId(e.hash) || e.text.trim().length === 0) {
+    return; // nothing recoverable (or must never propagate)
+  }
+  limbo.delete(e.hash); // refresh insertion order (Map = FIFO by insertion)
+  limbo.set(e.hash, e);
+  if (limbo.size > LIMBO_CAP) {
+    const oldest = limbo.keys().next().value as string;
+    limbo.delete(oldest);
+  }
+};
+// Test seam: inspect/clear the parked entries.
+export const limboSize = (): number => limbo.size;
+export const clearLimbo = (): void => {
+  limbo.clear();
+};
+
 // Donor index: PAGEID → entry over every OTHER doc's non-ephemeral,
-// non-empty, identity-stamped entries. Built lazily by pagesNeedingRead —
-// only when a candidate page actually shows up.
+// non-empty, identity-stamped entries — LIMBO included as fallback (live
+// entries win). Built lazily by pagesNeedingRead — only when a candidate
+// page actually shows up.
 export const buildPageIdDonors = (
   store: Store,
   excludePath: string,
@@ -430,6 +457,11 @@ export const buildPageIdDonors = (
       if (looksLikePageId(e.hash) && !out.has(e.hash)) {
         out.set(e.hash, e);
       }
+    }
+  }
+  for (const [id, e] of limbo) {
+    if (!out.has(id)) {
+      out.set(id, e);
     }
   }
   return out;
@@ -569,6 +601,7 @@ export const remapDocPages = (
     if (e.source === 'user' && k !== undefined && next[k] === undefined) {
       next[k] = e;
     } else {
+      parkInLimbo(e); // a moved-out page stays adoptable by its new note
       dropped++;
     }
   }

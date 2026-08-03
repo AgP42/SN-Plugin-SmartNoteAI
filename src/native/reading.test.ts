@@ -20,6 +20,7 @@ import {fetchAdapter} from './fetchAdapter';
 import {readPageIds, readNotePageRevs} from './noteTranscripts';
 import {mutateStore, flushStore} from './transcriptStoreIo';
 import {
+  clearLimbo,
   emptyStore,
   getPage,
   getDocHash,
@@ -155,6 +156,7 @@ const idMap = (...ids: string[]): Map<number, string> =>
 
 beforeEach(() => {
   jest.clearAllMocks();
+  clearLimbo(); // module-level parked drops must not leak between tests
   // readFileSize keeps whatever implementation a previous test installed
   // (clearAllMocks does not reset implementations): re-pin it so a leaked
   // .mark size cannot change another test's doc hash.
@@ -990,6 +992,36 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
     setDocLock(s, NOTE, true);
     expect(await pagesNeedingRead(baseDeps(), NOTE, [0, 1])).toEqual([]);
     expect(getPage(s, NOTE, 0)).toBeNull(); // nothing materialized
+  });
+});
+
+describe('relocation survives the source remap (limbo, v1.0.1)', () => {
+  // Device repro 2026-08-03 18:12: the tick remapped the SOURCE note
+  // first ("0 moved, 3 dropped"), deleting the donor entries 400 ms
+  // before the destination looked for them — 3 pages re-billed.
+  it('entries dropped by the source remap are still adopted by the destination', async () => {
+    const s = storeState.store;
+    const SRC = '/Note/source.note';
+    setPageIds(s, SRC, [PA, PB, PC]);
+    upsertPage(s, SRC, 0, entry(PA, {text: 'reste', rev: 's1'}), 1);
+    upsertPage(s, SRC, 1, entry(PB, {text: 'partie B', rev: 's2'}), 1);
+    upsertPage(s, SRC, 2, entry(PC, {text: 'partie C', rev: 's3'}), 1);
+    // The move: B and C left SRC. The source is remapped FIRST (the
+    // unfavorable tick order) — its entries for B and C are dropped.
+    const {remapDocPages} = jest.requireActual(
+      '../core/store/transcriptStore',
+    ) as typeof import('../core/store/transcriptStore');
+    const r = remapDocPages(s, SRC, [PA]);
+    expect(r.dropped).toBe(2);
+    expect(getPage(s, SRC, 1)).toBeNull(); // donors GONE from the docs
+    // NOW the destination (NOTE, pages PA'=PB, PC at 0/1) syncs.
+    pageIdsMock.mockResolvedValue(idMap(PB, PC));
+    revsMock.mockResolvedValue(new Map([[0, 'd1'], [1, 'd2']]));
+    const needed = await pagesNeedingRead(baseDeps(), NOTE, [0, 1]);
+    expect(needed).toEqual([]); // recovered from the LIMBO — not re-billed
+    expect(getPage(s, NOTE, 0)!.text).toBe('partie B');
+    expect(getPage(s, NOTE, 1)!.text).toBe('partie C');
+    expect(getPage(s, NOTE, 1)!.rev).toBe('d2'); // destination stamps
   });
 });
 

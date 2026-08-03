@@ -27,7 +27,13 @@ import {
   buildPageIdDonors,
   adoptPdfDoc,
   clearDocRespectingLocks,
+  clearLimbo,
+  limboSize,
 } from './transcriptStore';
+
+beforeEach(() => {
+  clearLimbo(); // module-level parked drops must not leak between tests
+});
 
 const entry = (text: string, over: Partial<PageEntry> = {}): PageEntry => ({
   text,
@@ -644,5 +650,29 @@ describe('clearDocRespectingLocks (user decision 2026-08-03: lock blocks Clear)'
   it('unknown doc → inert', () => {
     const s = emptyStore();
     expect(clearDocRespectingLocks(s, '/ghost.note').changed).toBe(false);
+  });
+});
+
+describe('limbo (v1.0.1: remap drops stay adoptable)', () => {
+  it('a dropped identity entry lands in limbo and feeds the donor index', () => {
+    const s = emptyStore();
+    setPageIds(s, '/n/src.note', ['P20260101000000001', 'P20260101000000002']);
+    upsertPage(s, '/n/src.note', 0, {text: 'garde', source: 'mistral-ocr', at: 1, hash: 'P20260101000000001'}, 1);
+    upsertPage(s, '/n/src.note', 1, {text: 'partie', source: 'medium', at: 2, hash: 'P20260101000000002'}, 1);
+    remapDocPages(s, '/n/src.note', ['P20260101000000001']); // page 2 left
+    expect(limboSize()).toBe(1);
+    const donors = buildPageIdDonors(s, '/n/dest.note');
+    expect(donors.get('P20260101000000002')!.text).toBe('partie');
+    // Live entries still win over limbo.
+    expect(donors.get('P20260101000000001')!.text).toBe('garde');
+  });
+
+  it('ephemeral and empty entries are never parked', () => {
+    const s = emptyStore();
+    setPageIds(s, '/n/src.note', ['P20260101000000003', 'P20260101000000004']);
+    upsertPage(s, '/n/src.note', 0, {text: 'secret', source: 'mistral-ocr', at: 1, hash: 'P20260101000000003', eph: true}, 1);
+    upsertPage(s, '/n/src.note', 1, {text: '   ', source: 'mistral-ocr', at: 1, hash: 'P20260101000000004'}, 1);
+    remapDocPages(s, '/n/src.note', []);
+    expect(limboSize()).toBe(0);
   });
 });
