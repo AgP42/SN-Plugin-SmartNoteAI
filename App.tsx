@@ -46,6 +46,7 @@ import {PANEL, applyScreenSize} from './src/ui/panelConfig';
 import {theme} from './src/ui/theme';
 import HomeScreen from './screens/HomeScreen';
 import MenuScreen, {type MenuItem} from './screens/MenuScreen';
+import {buildMenuItems} from './src/ui/menuVocab';
 import {ensureUserGuide, openUserGuide} from './src/native/guideSeed';
 import {captureBridge} from './src/native/captureBridge';
 import {captureCurrent} from './src/native/capture';
@@ -695,57 +696,31 @@ function App(): React.JSX.Element {
         })
         .catch(() => setMsg('Could not read the current file.'));
     };
-    const items: MenuItem[] = [
-      {
-        label: '💬 Open the assistant',
-        sub: 'Chat about the current page, a range or the whole note, or a lasso',
-        onPress: openAssistant,
+    const items: MenuItem[] = buildMenuItems({
+      assistant: openAssistant,
+      library: () => {
+        setLibTarget({doc: '', page: null});
+        navTo('library');
       },
-      {
-        label: '📚 Library: Sync, Search & Export',
-        sub: 'Sync status · browse, search and export your transcripts',
-        onPress: () => {
-          setLibTarget({doc: '', page: null});
-          navTo('library');
-        },
+      currentDoc: () => openCurrent(false),
+      currentPage: () => openCurrent(true),
+      config: () => navTo('home'),
+      guide: () => {
+        setMsg('opening the User Guide…');
+        // v0.88.1 (user #1): the PDF opened BEHIND the plugin view — close
+        // the view (settings flushed first) so the guide lands on top.
+        openUserGuide().then(ok => {
+          if (!ok) {
+            setMsg('⚠ Could not open the User Guide PDF.');
+            return;
+          }
+          setMsg('');
+          flushSettings()
+            .catch(() => {})
+            .then(() => setTimeout(() => PluginManager.closePluginView(), 150));
+        });
       },
-      {
-        label: '📄 Current note transcript',
-        sub: 'Open the note/PDF you have open, in the Library',
-        onPress: () => openCurrent(false),
-      },
-      {
-        label: '📃 Current page transcript',
-        sub: 'Open the exact page you are on',
-        onPress: () => openCurrent(true),
-      },
-      {
-        label: '⚙ Plugin configuration',
-        sub: 'API key · READ params · CHAT & agents',
-        onPress: () => navTo('home'),
-      },
-      {
-        label: '📖 User manual (PDF)',
-        sub: 'Open the embedded guide',
-        onPress: () => {
-          setMsg('opening the User Guide…');
-          // v0.88.1 (user #1): the PDF opened BEHIND the plugin view — close
-          // the view (settings flushed first) so the guide lands on top.
-          openUserGuide().then(ok => {
-            if (!ok) {
-              setMsg('⚠ Could not open the User Guide PDF.');
-              return;
-            }
-            setMsg('');
-            flushSettings()
-              .catch(() => {})
-              .then(() =>
-                setTimeout(() => PluginManager.closePluginView(), 150),
-              );
-          });
-        },
-      },
-    ];
+    });
     return (
       <MenuScreen
         scale={scale}

@@ -12,11 +12,14 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {makeStyles} from './panelStyles';
 import {OffGateDialog, AgentGapsDialog, EstimateDialog} from './PanelDialogs';
+import {BrainDropdown, type BrainEntry} from './BrainDropdown';
+import {TurnBubble} from './TurnBubble';
 import {
   ContextSheet,
   LassoPopup,
   AddedPagesPopup,
   AddedTranscriptSheet,
+  HistorySheet,
 } from './PanelSheets';
 import {
   DeviceEventEmitter,
@@ -41,7 +44,6 @@ import {
   stripContextBlocks,
   type AddedBlock,
 } from './src/core/convo/compose';
-import {mdToPlain} from './src/core/text/markdown';
 import {
   resolveQuickActions,
   type QuickActionItem,
@@ -2057,13 +2059,7 @@ export default function ChatPanel({
     agentId !== null ? agents.find(a => a.id === agentId) ?? null : null;
   // v0.81: the BrainBar dropdown entries — Chat + the user agents. The lasso
   // is no longer a brain; it rides whatever is selected here.
-  const brainEntries: {
-    key: string;
-    icon: string;
-    name: string;
-    id: string | null;
-    agent: Agent | null;
-  }[] = [
+  const brainEntries: BrainEntry[] = [
     {key: 'chat', icon: '💬', name: 'Chat', id: null, agent: null},
     ...agents.map(a => ({
       key: a.id,
@@ -2221,96 +2217,33 @@ export default function ChatPanel({
       ) : null}
 
       {/* v0.79.6: the brain dropdown (opened from the header agent name).
-          Top row = model + context on the left, New chat / History on the
-          right; then the agent list; then the last token usage. The old
-          BrainBar row and the ⋯ overflow are gone. */}
-      {brainOpen ? (
-        <View style={styles.dropdown}>
-          <View style={styles.brainTop}>
-            <View style={{flex: 1}}>
-              <Text style={styles.brainMeta} numberOfLines={1}>
-                {effectiveModel}
-              </Text>
-              {/* v0.80.1 (user): the active agent's knowledge, spelled out. */}
-              {activeAgent !== null &&
-              agentStats.get(activeAgent.id) !== undefined ? (
-                <Text style={styles.brainMeta} numberOfLines={1}>
-                  {`knows ${agentStats.get(activeAgent.id)!.docs} doc(s) · ${
-                    agentStats.get(activeAgent.id)!.read
-                  } page(s) read`}
-                </Text>
-              ) : null}
-              {pendingCtx.length > 0 ? (
-                <Text style={styles.brainMeta} numberOfLines={1}>
-                  {pendingCtx.length} context page(s)
-                </Text>
-              ) : null}
-            </View>
-            <TouchableOpacity
-              onPress={() => {
-                setBrainOpen(false);
-                onNewChat();
-              }}
-              disabled={busy}
-              style={styles.brainTopBtn}>
-              <Text style={styles.brainTopBtnText}>＋ New chat</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => {
-                setBrainOpen(false);
-                openHistory();
-              }}
-              disabled={busy}
-              style={styles.brainTopBtn}>
-              <Text style={styles.brainTopBtnText}>🕘 History</Text>
-            </TouchableOpacity>
-          </View>
-          {brainEntries.map(b => {
-            const on =
-              (b.id === null && agentId === null) || b.id === agentId;
-            return (
-              <TouchableOpacity
-                key={b.key}
-                onPress={() => {
-                  onPickAgent(b.agent);
-                  setBrainOpen(false);
-                }}
-                style={styles.dropItem}>
-                <Text
-                  style={[styles.dropItemText, on && styles.dropItemTextOn]}
-                  numberOfLines={1}>
-                  {on ? '● ' : '○ '}
-                  {b.icon} {b.name}
-                  {/* v0.81 (user): each row shows the MODEL it runs on
-                      (the agent's own, or the CHAT model when unset). */}
-                  {` · ${shortModelId(
-                    (b.agent && b.agent.model.trim().length > 0
-                      ? b.agent.model.trim()
-                      : model) || DEFAULT_MODEL,
-                  )}`}
-                  {/* v0.80.1 (user): an agent row SHOWS its knowledge — how
-                      many docs / transcribed pages ride with every question
-                      (it looked empty even with folders attached). */}
-                  {b.id !== null && agentStats.get(b.id) !== undefined
-                    ? ` · ${agentStats.get(b.id)!.docs} docs · ${
-                        agentStats.get(b.id)!.read
-                      } p`
-                    : ''}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-          {lastUsage ? (
-            <Text style={styles.dropUsage} numberOfLines={1}>
-              last: {lastUsage.inputTokens} in
-              {lastUsage.cachedTokens > 0
-                ? ` (${lastUsage.cachedTokens} cached −90%)`
-                : ''}{' '}
-              · {lastUsage.outputTokens} out
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
+          Extracted to BrainDropdown.tsx (Lot 3) — pure render. */}
+      <BrainDropdown
+        styles={styles}
+        open={brainOpen}
+        effectiveModel={effectiveModel}
+        entries={brainEntries}
+        agentId={agentId}
+        busy={busy}
+        pendingCtxCount={pendingCtx.length}
+        activeStats={
+          activeAgent !== null
+            ? agentStats.get(activeAgent.id) ?? null
+            : null
+        }
+        statsFor={id => agentStats.get(id)}
+        modelLabelFor={a =>
+          shortModelId(
+            (a && a.model.trim().length > 0 ? a.model.trim() : model) ||
+              DEFAULT_MODEL,
+          )
+        }
+        lastUsage={lastUsage}
+        onNewChat={onNewChat}
+        onOpenHistory={openHistory}
+        onPickAgent={onPickAgent}
+        onClose={() => setBrainOpen(false)}
+      />
 
       {/* v0.78 ContextTray: the context as CHIPS (lasso · page/scope ·
           +N added). Any chip → the context sheet. Replaces the old
@@ -2455,48 +2388,19 @@ export default function ChatPanel({
           </View>
         ) : (
           turns.map((t, i) => (
-            <View
+            <TurnBubble
               key={i}
+              styles={styles}
+              turn={t}
+              index={i}
+              scale={scale}
+              msgText={msgText}
+              copied={copied}
+              onCopy={onCopy}
               onLayout={e => {
                 turnY.current[i] = e.nativeEvent.layout.y;
               }}
-              style={[
-                styles.bubble,
-                t.role === 'user' ? styles.bubbleUser : styles.bubbleAI,
-              ]}>
-              {t.role === 'user' ? (
-                <Text selectable style={[styles.bubbleText, msgText]}>
-                  {/* v0.81: light marker that this turn carried lasso image(s). */}
-                  {t.hadImage === true ? '🖼 ' : ''}
-                  {stripContextBlocks(t.text)}
-                </Text>
-              ) : (
-                <MarkdownView
-                  text={t.text}
-                  scale={scale}
-                  baseStyle={styles.bubbleText}
-                  selectable
-                />
-              )}
-              {t.role === 'assistant' ? (
-                <View style={styles.copyRow}>
-                  <TouchableOpacity
-                    onPress={() => onCopy(t.text, `${i}:md`)}
-                    style={styles.copyBtn}>
-                    <Text style={styles.copyText}>
-                      {copied === `${i}:md` ? '✓' : 'Copy .md'}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => onCopy(mdToPlain(t.text), `${i}:txt`)}
-                    style={styles.copyBtn}>
-                    <Text style={styles.copyText}>
-                      {copied === `${i}:txt` ? '✓' : 'Copy .txt'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              ) : null}
-            </View>
+            />
           ))
         )}
       </ScrollView>
@@ -2927,72 +2831,19 @@ export default function ChatPanel({
       ) : null}
 
       {/* ---- Historique (v0.21): list + resume ---- */}
-      {histOpen ? (
-        <View style={styles.sheetWrap}>
-          <TouchableOpacity
-            style={StyleSheet.absoluteFill}
-            activeOpacity={1}
-            onPress={() => setHistOpen(false)}
-          />
-          <View style={styles.sheet}>
-            <View style={styles.sheetHead}>
-              <Text style={styles.sheetTitle}>Conversations</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  onNewChat();
-                  setHistOpen(false);
-                }}
-                style={styles.actBtn2}>
-                <Text style={styles.actBtn2Text}>＋ New</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => setHistOpen(false)}
-                style={styles.sheetClose}>
-                <Text style={styles.sheetCloseText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.sheetBody}>
-              {histList.length === 0 ? (
-                <Text style={styles.hint}>No saved conversations yet.</Text>
-              ) : (
-                histList.map(m => (
-                  <View key={m.id} style={styles.histRow}>
-                    <TouchableOpacity
-                      onPress={() => onResume(m)}
-                      style={styles.histMain}>
-                      <Text style={styles.histTitle} numberOfLines={1}>
-                        {m.id === convId.current ? '(current) ' : '▸ '}
-                        {m.agentId !== undefined
-                          ? `${
-                              agents.find(a => a.id === m.agentId)?.icon ?? '∅'
-                            } `
-                          : ''}
-                        {m.title}
-                      </Text>
-                      <Text style={styles.histDate}>{fmtDay(m.updatedAt)}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => onDeleteConv(m.id)}
-                      style={[
-                        styles.histDel,
-                        // v0.80.1 (user): armed = inverted video, everywhere.
-                        confirmDelId === m.id && {backgroundColor: '#000000'},
-                      ]}>
-                      <Text
-                        style={[
-                          styles.histDelText,
-                          confirmDelId === m.id && {color: '#ffffff'},
-                        ]}>
-                        {confirmDelId === m.id ? 'Delete?' : '✕'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      ) : null}
+      <HistorySheet
+        styles={styles}
+        open={histOpen}
+        histList={histList}
+        currentConvId={convId.current}
+        agents={agents}
+        confirmDelId={confirmDelId}
+        fmtDay={fmtDay}
+        onResume={onResume}
+        onDeleteConv={onDeleteConv}
+        onNewChat={onNewChat}
+        onClose={() => setHistOpen(false)}
+      />
 
       <OffGateDialog
         styles={styles}

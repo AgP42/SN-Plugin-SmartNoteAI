@@ -741,19 +741,35 @@ export const exportLibraryFull = async (): Promise<
   let docs = 0;
   let failed = 0;
   const landed: Record<string, string> = {};
-  for (const [path, file] of Object.entries(parsed.shards)) {
-    const text = await readTextFileUtf8(`${dir}/docs/${file}`);
-    if (text === null || text.length === 0) {
-      failed++; // unreadable shard: reported, never silently skipped
-      continue;
+  // Bounded pool (collecte 2026-08-03): the strictly sequential copy took
+  // one native round-trip pair per doc — noticeable past ~150 docs. Four
+  // in flight overlaps the bridge latency while keeping at most four
+  // shards' text in memory at once (shards can be large).
+  const entries = Object.entries(parsed.shards);
+  let next = 0;
+  const copyWorker = async (): Promise<void> => {
+    for (;;) {
+      const idx = next++;
+      if (idx >= entries.length) {
+        return;
+      }
+      const [path, file] = entries[idx];
+      const text = await readTextFileUtf8(`${dir}/docs/${file}`);
+      if (text === null || text.length === 0) {
+        failed++; // unreadable shard: reported, never silently skipped
+        continue;
+      }
+      if (await writeTextAtomic(`${LIBRARY_BACKUP_DIR}/docs/${file}`, text)) {
+        docs++;
+        landed[path] = file;
+      } else {
+        failed++;
+      }
     }
-    if (await writeTextAtomic(`${LIBRARY_BACKUP_DIR}/docs/${file}`, text)) {
-      docs++;
-      landed[path] = file;
-    } else {
-      failed++;
-    }
-  }
+  };
+  await Promise.all(
+    Array.from({length: Math.min(4, entries.length)}, copyWorker),
+  );
   // The index goes LAST and lists ONLY what landed (pre-reinstall audit
   // #5: it used to copy the live index verbatim, ghosts included).
   const bakIndex = JSON.stringify({

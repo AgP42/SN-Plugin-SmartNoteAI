@@ -578,7 +578,7 @@ describe('adoptPdfDoc', () => {
     expect(adoptPdfDoc(empty, dest, 5000, 1)).toBe(false);
   });
 
-  it('refuses when the destination already has pages or carries a lock stub', () => {
+  it('refuses when the destination holds real text or carries a doc lock', () => {
     const s1 = withDonor();
     upsertPage(s1, dest, 0, {text: 'mine', source: 'user', at: 5, hash: ''}, 5);
     expect(adoptPdfDoc(s1, dest, 5000, 1)).toBe(false);
@@ -587,6 +587,50 @@ describe('adoptPdfDoc', () => {
     setDocLock(s2, dest, true); // spec S6: frozen means frozen, even for free writes
     expect(adoptPdfDoc(s2, dest, 5000, 1)).toBe(false);
     expect(Object.keys(s2.docs[dest].pages)).toHaveLength(0);
+  });
+
+  // Audit 2 (2026-08-03): a TEXTLESS page at a NEVER-READ path is not data.
+  // Refusing on it re-OCR'd a whole already-paid book on a simple move.
+  it('adopts over a blank marker at a never-read destination (docHash still empty)', () => {
+    const s = withDonor();
+    upsertPage(s, dest, 0, {text: '', source: 'mistral-ocr', at: 3, hash: '', va: 'mh:x'}, 3);
+    expect(s.docs[dest].docHash).toBe(''); // nothing was ever read here
+    expect(adoptPdfDoc(s, dest, 5000, 42)).toBe(true);
+    expect(s.docs[dest].pages['0'].text).toBe('p1'); // the donor's real text wins
+  });
+
+  it('still refuses when a LOCKED page sits at the destination, empty or not', () => {
+    const s = withDonor();
+    setPageLock(s, dest, 0, true); // stub on a never-read page (spec S6)
+    expect(adoptPdfDoc(s, dest, 5000, 42)).toBe(false);
+    expect(s.docs[dest].pages['0'].lock).toBe(true);
+  });
+
+  // Audit 3, critical #1: a PDF with NO printed text (blank grid template,
+  // sketchbook) is a normal fully-paid document — its pages are '' and its
+  // value lives entirely in the vh/va markers and the markSz doorbell.
+  it('refuses a destination that was already READ, even with zero text anywhere', () => {
+    const s = withDonor();
+    upsertPage(s, dest, 0, {text: '', source: 'medium', at: 3, hash: '', vh: 'mh:mine'}, 3);
+    s.docs[dest].docHash = '5000'; // read and covered: docHash is the proof
+    s.docs[dest].markSz = 4242; // annotations settled here
+    expect(adoptPdfDoc(s, dest, 5000, 42)).toBe(false);
+    expect(s.docs[dest].pages['0'].vh).toBe('mh:mine'); // ITS pixels, kept
+    expect(s.docs[dest].markSz).toBe(4242); // doorbell not re-armed
+  });
+
+  // Audit 3, critical #2: adoption must be self-terminating. A textless
+  // donor used to leave the destination textless, so every readPdf adopted
+  // again — dropping markSz and re-billing the annotated pages each tick.
+  it('is idempotent even when the donor itself carries no text at all', () => {
+    const s = emptyStore();
+    upsertPage(s, donorAt, 0, {text: '', source: 'medium', at: 9, hash: '', vh: 'mh:a'}, 9);
+    upsertPage(s, donorAt, 1, {text: '', source: 'medium', at: 9, hash: '', vh: 'mh:b'}, 9);
+    s.docs[donorAt].docHash = '5000';
+    expect(adoptPdfDoc(s, dest, 5000, 42)).toBe(true); // first move: inherits
+    expect(s.docs[dest].docHash).toBe('5000'); // …and is stamped as read
+    expect(adoptPdfDoc(s, dest, 5000, 43)).toBe(false); // every later tick: no-op
+    expect(adoptPdfDoc(s, dest, 5000, 44)).toBe(false);
   });
 
   it('skips ephemeral donor pages; adopts nothing if only eph remains', () => {

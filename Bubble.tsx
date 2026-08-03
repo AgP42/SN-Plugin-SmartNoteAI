@@ -25,6 +25,7 @@ import {
 import {PluginManager} from 'sn-plugin-lib';
 import ChatPanel, {type SnapKind} from './ChatPanel';
 import MenuScreen, {type MenuItem} from './screens/MenuScreen';
+import {buildMenuItems, MENU_VOCAB} from './src/ui/menuVocab';
 import {
   PANEL,
   applyScreenSize,
@@ -74,7 +75,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // chat spot before goMenu moved it back — a visible two-step jump).
   const openGeo = (() => {
     if (view === 'menu') {
-      const m = menuSizeFor(FALLBACK_W, FALLBACK_H, 6);
+      const m = menuSizeFor(FALLBACK_W, FALLBACK_H, MENU_VOCAB.length);
       const o = menuOrigin(FALLBACK_W, FALLBACK_H, 'left', m.width, m.height);
       return {x: o.x, y: o.y, w: m.width, h: m.height};
     }
@@ -103,7 +104,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
     } catch {
       // fallback dims
     }
-    const m = menuSizeFor(sw, sh, 6); // 6 items since the v0.88.1 merge
+    const m = menuSizeFor(sw, sh, MENU_VOCAB.length);
     const o = menuOrigin(sw, sh, toolbarSide.current, m.width, m.height);
     pos.current = {x: o.x, y: o.y};
     size.current = {w: m.width, h: m.height};
@@ -411,41 +412,17 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
 
   const collapsed = mode === 'collapsed';
 
-  const menuItems: MenuItem[] = [
-    {
-      label: '💬 Open the assistant',
-      sub: 'Chat / lasso on the current page',
-      onPress: goChat,
+  const menuItems: MenuItem[] = buildMenuItems({
+    assistant: goChat,
+    library: () => openHosted('library', {doc: '', page: null}),
+    currentDoc: () => openCurrent(false),
+    currentPage: () => openCurrent(true),
+    config: () => openHosted('home', null),
+    guide: () => {
+      openUserGuide().catch(() => {});
+      close();
     },
-    {
-      label: '📚 Library: Sync, Search & Export',
-      sub: 'Sync status · browse, search and export your transcripts',
-      onPress: () => openHosted('library', {doc: '', page: null}),
-    },
-    {
-      label: '📄 Current note transcript',
-      sub: 'The note / PDF you have open',
-      onPress: () => openCurrent(false),
-    },
-    {
-      label: '📃 Current page transcript',
-      sub: 'The exact page you are on',
-      onPress: () => openCurrent(true),
-    },
-    {
-      label: '⚙ Plugin configuration',
-      sub: 'API key · READ · CHAT & agents',
-      onPress: () => openHosted('home', null),
-    },
-    {
-      label: '📖 User manual (PDF)',
-      sub: 'Open the embedded guide',
-      onPress: () => {
-        openUserGuide().catch(() => {});
-        close();
-      },
-    },
-  ];
+  });
   const menuHeaderRight = (): React.JSX.Element => (
     <TouchableOpacity
       onPress={close}

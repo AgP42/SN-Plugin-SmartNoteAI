@@ -13,6 +13,7 @@ import {
   pagesNeedingRead,
   readNotePages,
   readPdf,
+  readPdfPageVision,
   finishVisionLive,
   syncNotePages,
   pageStamp,
@@ -977,6 +978,15 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
     expect(getPage(s, NOTE, 1)!.va).toBeUndefined();
   });
 
+  it('the pixel identity (vh) travels with the page — no bootstrap read after a move', async () => {
+    const s = storeState.store;
+    upsertPage(s, OLD_NOTE, 0, entry(PA, {text: 'Un', rev: 'x1', vh: 'nh:cafe1234'}), 1);
+    upsertPage(s, OLD_NOTE, 1, entry(PB, {text: 'Deux', rev: 'x2'}), 1); // pre-1.0.4 donor, no vh
+    await pagesNeedingRead(baseDeps(), NOTE, [0, 1]);
+    expect(getPage(s, NOTE, 0)!.vh).toBe('nh:cafe1234'); // copied verbatim
+    expect(getPage(s, NOTE, 1)!.vh).toBeUndefined(); // absent stays absent
+  });
+
   it('an in-place edit is NEVER hijacked by a donor: same PAGEID on the entry → re-read', async () => {
     const s = storeState.store;
     setPageIds(s, NOTE, [PA, PB]);
@@ -1020,6 +1030,75 @@ describe('vision "The page is blank." answers (collecte ①)', () => {
     });
     await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
     expect(getPage(s, NOTE, 0)!.text).toContain('appeler Karim');
+  });
+});
+
+describe('manual PDF Redo on a blank page (readPdfPageVision)', () => {
+  // An ANNOTATED page (its ink layer is what makes an entry legitimate).
+  const annDeps = () =>
+    baseDeps({
+      getMarkPages: jest.fn(async () => ({result: [0], success: true})),
+    });
+
+  it('a blank answer SUCCEEDS with an honest reason — never an error the user can re-tap forever', async () => {
+    setDocHash(storeState.store, PDF, 'dh1');
+    route({chat: () => chatRes('The page is blank.')});
+    const out = await readPdfPageVision(baseDeps(), 'k', 'sys', PDF, 0);
+    expect(out.ok).toBe(true); // used to be ok:false "Vision returned nothing."
+    expect(out.reason).toContain('blank'); // the tap gets an answer
+  });
+
+  it('a PLAIN page with no entry gets NO invented entry (audit 2: it would block adoptPdfDoc)', async () => {
+    const s = storeState.store;
+    setDocHash(s, PDF, 'dh1');
+    route({chat: () => chatRes('The page is blank.')});
+    await readPdfPageVision(baseDeps(), 'k', 'sys', PDF, 0);
+    // Inventing a page here would make a later move of this PDF re-OCR the
+    // WHOLE file (adoption refuses a destination that already has pages).
+    expect(getPage(s, PDF, 0)).toBeNull();
+  });
+
+  it('an ANNOTATED page with no entry gets the durable marker, like the automatic pass', async () => {
+    const s = storeState.store;
+    setDocHash(s, PDF, 'dh1');
+    route({chat: () => chatRes('The page is blank.')});
+    await readPdfPageVision(annDeps(), 'k', 'sys', PDF, 0);
+    const e = getPage(s, PDF, 0)!;
+    expect(e.text).toBe(''); // negative-cache
+    expect(e.source).toBe('mistral-ocr');
+    expect(e.va).toMatch(/^mh:/); // keyed to ITS pixels, not the doc
+  });
+
+  it('an Off-consent (eph) read marks that marker ephemeral — the boot wipe must reach it', async () => {
+    const s = storeState.store;
+    setDocHash(s, PDF, 'dh1');
+    route({chat: () => chatRes('The page is blank.')});
+    await readPdfPageVision(annDeps(), 'k', 'sys', PDF, 0, {
+      offOk: true,
+      eph: true,
+    });
+    expect(getPage(s, PDF, 0)!.eph).toBe(true); // audit 1 #1
+  });
+
+  it('a normal read never marks it ephemeral', async () => {
+    const s = storeState.store;
+    setDocHash(s, PDF, 'dh1');
+    route({chat: () => chatRes('The page is blank.')});
+    await readPdfPageVision(annDeps(), 'k', 'sys', PDF, 0);
+    expect(getPage(s, PDF, 0)!.eph).toBeUndefined();
+  });
+
+  it('an existing OCR text is KEPT when the vision recheck comes back empty', async () => {
+    const s = storeState.store;
+    setDocHash(s, PDF, 'dh1');
+    upsertPage(s, PDF, 0, entry('', {text: 'texte ocr'}), 1);
+    route({chat: () => chatRes('')});
+    const out = await readPdfPageVision(baseDeps(), 'k', 'sys', PDF, 0);
+    expect(out.ok).toBe(true);
+    expect(out.reason).toContain('nothing to add'); // distinct from blank
+    const e = getPage(s, PDF, 0)!;
+    expect(e.text).toBe('texte ocr'); // vision added nothing — text intact
+    expect(e.va).toBe('d:dh1');
   });
 });
 
@@ -1196,5 +1275,30 @@ describe('PDF adoption by identity (readPdf)', () => {
     });
     expect(r.ok).toBe(true);
     expect(getPage(s, NEW_PDF, 0)!.text).toContain('fresh text');
+  });
+
+  // Audit 3 #3: an Off-consent read promises to store nothing, and its wipe
+  // only removes the pages THAT run stored — adopted entries carry no eph
+  // flag, so adopting into an Off doc would settle transcripts permanently.
+  it('an Off-consent (eph) read never adopts — nothing settles into an Off document', async () => {
+    const s = storeState.store;
+    upsertPage(s, PDF, 0, entry('', {text: 'page pdf', source: 'mistral-ocr'}), 1);
+    setDocHash(s, PDF, '5000');
+    (
+      jest.requireMock('./noteTranscripts') as {readFileSize: jest.Mock}
+    ).readFileSize.mockImplementation(async (p: string) =>
+      p === NEW_PDF ? 5000 : null,
+    );
+    route({ocr: () => ocrRes('lu une fois', GOOD)});
+    await readPdf(baseDeps(), 'k', 'sys', NEW_PDF, {
+      skipVision: true,
+      offOk: true,
+      eph: true,
+    });
+    // Whatever this run stored is eph (wiped after the answer); nothing was
+    // inherited from the donor behind the user's back.
+    const e = getPage(s, NEW_PDF, 0);
+    expect(e?.text).not.toBe('page pdf');
+    expect(getPage(s, PDF, 0)!.text).toBe('page pdf'); // donor untouched
   });
 });

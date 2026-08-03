@@ -469,6 +469,12 @@ export const pagesNeedingRead = async (
             // the DESTINATION identity so the drain never re-bills a page
             // whose vision already settled at the donor.
             va: donor.va !== undefined ? revs.get(p) : undefined,
+            // The pixel identity travels with the page: same ink → same
+            // render → same hash on the destination, so the settle check
+            // works immediately and the move needs NO bootstrap read. If
+            // the render ever differs, the check simply fails closed into
+            // one normal paid read — nothing can be wrongly skipped.
+            vh: donor.vh,
             low:
               donor.low !== undefined
                 ? donor.low.map(w => ({...w}))
@@ -1559,7 +1565,75 @@ export const readPdfPageVision = async (
           markDocTouched(pdfPath);
         });
       }
+      // A PAID write must reach disk NOW (audit 3 #4, and the rule stated
+      // at upsertTranscript): every automatic caller flushes after its
+      // pass, this manual one rode the 800 ms debounce alone — and RN
+      // freezes JS timers the moment the plugin view goes background,
+      // which is exactly what a user does right after tapping Redo.
+      await flushStore();
       return {ok: true, read: 1, failed: []};
+    }
+    if (v.ok) {
+      // The request LANDED and vision saw nothing — a truly blank page or
+      // a bare "The page is blank." statement. The automatic pass stores
+      // the durable empty marker for this; the manual Redo used to surface
+      // "Vision returned nothing." as an ERROR and store nothing, so the
+      // user could re-tap (and re-pay) forever (collecte 2026-08-03).
+      // Same rules as the pass: existing OCR text is KEPT (vision merely
+      // added nothing to it), only a missing entry becomes the '' marker.
+      if (isPageLocked(await loadStore(), pdfPath, page)) {
+        return {ok: false, read: 0, failed: [page], reason: 'Page is locked.'};
+      }
+      const dh = getDocHash(await loadStore(), pdfPath);
+      const tag = annotated ? pageMarkHash(img) : null;
+      // Did this page already carry text? Decides which truth to report.
+      const kept =
+        (getPage(await loadStore(), pdfPath, page)?.text ?? '').trim().length >
+        0;
+      await mutateStore(st => {
+        if (isPageLocked(st, pdfPath, page)) {
+          return false; // locked between the check and the write
+        }
+        let e = getPage(st, pdfPath, page);
+        if (e === null && tag !== null) {
+          // Audit 2 #2 (money): create an entry ONLY for an ANNOTATED page,
+          // exactly like the automatic pass. A PLAIN page's entry is the
+          // whole-file OCR's job — inventing one here gives the doc a page
+          // it did not have, and adoptPdfDoc refuses to adopt into a doc
+          // that already has pages: moving that PDF would then re-OCR the
+          // WHOLE file. A plain blank page keeps its honest message below
+          // and simply re-reads if the user taps Redo again (one page).
+          const fresh = makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now());
+          if (opts?.eph === true) {
+            // Audit 1 #1: the old error path stored NOTHING, so an
+            // Off-consent read left no trace for free. Creating the marker
+            // must carry the same flag as every other writer or the boot
+            // wipe never sweeps it and an Off doc keeps an entry.
+            fresh.eph = true;
+          }
+          upsertPage(st, pdfPath, page, fresh, Date.now());
+          e = getPage(st, pdfPath, page);
+        }
+        if (e !== null && e.source === 'mistral-ocr') {
+          e.va = tag ?? `d:${dh}`; // annotated: its pixels; plain: the doc
+        } else if (e !== null && e.source === 'medium' && tag !== null) {
+          e.vh = tag; // recheck came back empty — record the current pixels
+        }
+        markDocTouched(pdfPath);
+      });
+      // Same durability rule as the paid branch above: the marker is what
+      // stops this page being re-read, so it may not ride a JS timer.
+      await flushStore();
+      // Succeeded, but nothing changed on screen: SAY so (the tap deserves
+      // an answer, and silence used to read as a broken button).
+      return {
+        ok: true,
+        read: 1,
+        failed: [],
+        reason: kept
+          ? 'Vision found nothing to add — the transcript is unchanged.'
+          : 'This page is blank — nothing to transcribe.',
+      };
     }
     return {
       ok: false,
@@ -1850,13 +1924,14 @@ const visionPassPdf = async (
           if (e === null && annTag !== null) {
             // An annotated page the whole-doc OCR produced nothing for:
             // create the negative-cache entry so the marker has a home.
-            upsertPage(
-              st,
-              pdfPath,
-              page,
-              makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now()),
-              Date.now(),
-            );
+            const fresh = makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now());
+            if (opts?.eph === true) {
+              // Audit 2 #3: the twin of the manual writer — an Off-doc
+              // read must mark its stub ephemeral here too, or the boot
+              // sweep leaves an Off document holding an entry.
+              fresh.eph = true;
+            }
+            upsertPage(st, pdfPath, page, fresh, Date.now());
             e = getPage(st, pdfPath, page);
           }
           if (e !== null && e.source === 'mistral-ocr') {
@@ -2045,7 +2120,12 @@ export const readPdf = async (
       // printed bytes) inherits its transcripts from the old path instead
       // of being re-billed. In-memory singleton: the covered check below
       // sees the adopted pages immediately.
-      if (!opts?.force) {
+      // NEVER during an Off-consent read (audit 3 #3): that read promises
+      // to store nothing, and its wipe only removes the pages THIS run
+      // stored — adopted entries carry no eph flag, so they would settle
+      // permanently into a document the user has set to Off. The document
+      // adopts normally on any later read once it is tracked again.
+      if (!opts?.force && opts?.eph !== true) {
         let adopted = false;
         await mutateStore(s => {
           adopted = adoptPdfDoc(s, pdfPath, byteLen, Date.now());

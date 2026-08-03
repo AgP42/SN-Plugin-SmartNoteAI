@@ -1,6 +1,6 @@
 {
   "name": "smartpaper",
-  "version": "0.38.4",
+  "version": "1.0.5",
   "private": true,
   "scripts": {
     "android": "react-native run-android",

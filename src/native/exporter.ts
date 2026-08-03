@@ -189,7 +189,13 @@ export const runExport = async (
     // the LATEST transcript datetime.
     const srcEntries = entries
       .map(x => x.e)
-      .filter((e): e is NonNullable<typeof e> => e !== null);
+      // Blank pages (empty negative-cache) carry no transcript: they must
+      // not put "Mistral OCR" in the header of a doc whose only entries
+      // are blanks (collecte 2026-08-03) — nor drive the datetime.
+      .filter(
+        (e): e is NonNullable<typeof e> =>
+          e !== null && e.text.trim().length > 0,
+      );
     const srcLabels = [...new Set(srcEntries.map(e => SRC_LABEL[e.source]))];
     const srcAt = srcEntries.reduce((m, e) => Math.max(m, e.at), 0);
     const source =

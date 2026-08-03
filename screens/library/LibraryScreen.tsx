@@ -35,14 +35,13 @@ import {
   lockedPageCount,
 } from '../../src/core/store/transcriptStore';
 import {type SearchHit} from '../../src/core/store/librarySearch';
-import SearchControls, {highlightSnippet} from '../../SearchControls';
+import SearchControls from '../../SearchControls';
 import ActivityBanner from '../../src/ui/ActivityBanner';
 import {mdToPlain} from '../../src/core/text/markdown';
 import {
   resolveAutoTarget,
   modeLabel,
   DEFAULT_MODE,
-  isAutoFolderKey,
   type AutoTarget,
   type AutoMode,
 } from '../../src/core/store/autoEngine';
@@ -74,6 +73,8 @@ import {
   STORAGE_UNAVAILABLE_MSG,
 } from '../../src/native/transcriptStoreIo';
 import {type Agent, isUnderDocRef} from '../../src/core/agents/agents';
+import {computeSyncFrame} from './syncFrameModel';
+import SearchHitsList from './SearchHitsList';
 import AddToPicker, {
   InlineMenu,
   type AddTarget,
@@ -1969,114 +1970,13 @@ function LibraryScreen({
   // (~40k startsWith with a big library). As an inline IIFE it re-ran on
   // EVERY render — each setMsg, each sync progress tick. Volatile bits
   // (recent syncs, last-sync stamp, button states) stay in the JSX.
-  const syncFrame = useMemo(() => {
-    type Agg = {
-      notes: number; // all files (notes + PDFs)
-      noteFiles: number;
-      pdfFiles: number;
-      pages: number;
-      toRead: number;
-      pdfUnknown: number;
-    };
-    const autoPendingNames: string[] = [];
-    const agg: Record<'auto' | 'manual' | 'off', Agg> = {
-      auto: {notes: 0, noteFiles: 0, pdfFiles: 0, pages: 0, toRead: 0, pdfUnknown: 0},
-      manual: {notes: 0, noteFiles: 0, pdfFiles: 0, pages: 0, toRead: 0, pdfUnknown: 0},
-      off: {notes: 0, noteFiles: 0, pdfFiles: 0, pages: 0, toRead: 0, pdfUnknown: 0},
-    };
-    const seen = new Set<string>();
-    const addFile = (p: string) => {
-      if (seen.has(p)) {
-        return;
-      }
-      seen.add(p);
-      const t = resolveAutoTarget(autoTargets, p);
-      if (t === null) {
-        return; // untracked — not part of the frame
-      }
-      const a = agg[t.mode];
-      a.notes++;
-      if (/\.pdf$/i.test(p)) {
-        a.pdfFiles++;
-      } else {
-        a.noteFiles++;
-      }
-      const d = libByPath.get(p);
-      if (d !== undefined) {
-        a.pages += d.total;
-        // total - READ (not total - non-empty): a page read but found
-        // blank is done, not pending (else it never drains). pdfCovered:
-        // a docHash-stamped PDF is fully read — its text-less pages have
-        // no entry by design and showed as a phantom "N to sync" forever.
-        // The stale map (v0.53) overrides structure when known; it only
-        // applies to docs CURRENTLY Manual (2026-07-19 evening: a note
-        // flipped to Auto kept its stale count).
-        const stale =
-          t.mode === 'manual' ? getManualStale().get(p) : undefined;
-        const filePend =
-          stale !== undefined
-            ? stale
-            : d.pdfCovered
-            ? 0
-            : Math.max(0, d.total - d.read);
-        a.toRead += filePend;
-        if (t.mode === 'auto' && filePend > 0) {
-          autoPendingNames.push(`${p.split('/').pop()} (${filePend})`);
-        }
-      } else {
-        const n = pageCounts[p] ?? 0;
-        if (n > 0) {
-          a.pages += n;
-          a.toRead += n; // store never saw it → all pending
-          if (t.mode === 'auto') {
-            autoPendingNames.push(`${p.split('/').pop()} (${n})`);
-          }
-        } else {
-          a.pdfUnknown++; // no local count (PDF, or not swept yet)
-        }
-      }
-    };
-    for (const d of lib) {
-      addFile(d.path);
-    }
-    for (const [dir, kids] of Object.entries(treeCache)) {
-      for (const k of kids) {
-        if (!k.isDir) {
-          addFile(`${dir}/${k.name}`);
-        }
-      }
-    }
-    // Pending pages count toward the MANUAL column only for docs that
-    // still resolve to Manual (re-audit 2026-07-19: flipping a submitted
-    // doc to Auto/Off removed its pages from man.toRead but kept
-    // subtracting them below — other notes' genuine backlog vanished
-    // from "to sync" and could grey out both Sync buttons).
-    // Batch removed: there is no server-side job wave anymore. Everything
-    // Manual that still needs reading is simply "to sync"; nothing sits "at
-    // Mistral". These zeros keep the return shape stable for the UI.
-    const atMistralPages = 0;
-    const atMistralPdfs = 0;
-    const man = agg.manual;
-    const toSync = man.toRead;
-    const upToDate = Math.max(0, man.pages - man.toRead);
-    const canSync = toSync > 0 || man.pdfUnknown > 0;
-    const foldersCnt = {auto: 0, manual: 0, off: 0};
-    for (const [k, t] of Object.entries(autoTargets)) {
-      if (isAutoFolderKey(k) && t.mode in foldersCnt) {
-        foldersCnt[t.mode]++;
-      }
-    }
-    return {
-      agg,
-      autoPendingNames,
-      atMistralPages,
-      atMistralPdfs,
-      toSync,
-      upToDate,
-      canSync,
-      foldersCnt,
-    };
-  }, [lib, libByPath, treeCache, autoTargets, pageCounts]);
+  // Lot 2 (2026-08-03): the aggregation is a pure function in
+  // syncFrameModel.ts — testable money math, out of the screen.
+  const syncFrame = useMemo(
+    () =>
+      computeSyncFrame(lib, treeCache, autoTargets, pageCounts, getManualStale()),
+    [lib, treeCache, autoTargets, pageCounts],
+  );
 
   // Library search now lives in the shared <SearchControls> component
   // (base + advanced multi-criteria); it emits results via onResults.
@@ -2368,8 +2268,10 @@ function LibraryScreen({
         }
         // Surface a refusal (the Off gate lives in reading.ts, and since
         // v0.94 it covers the PDF single-page path too) or a failure,
-        // instead of silently showing the unchanged entry.
-        setMsg(!r.ok && r.reason ? `⚠ ${r.reason}` : '');
+        // instead of silently showing the unchanged entry. A SUCCESS may
+        // also carry a reason — "nothing to add", "page is blank" — and it
+        // is shown plainly: it is an answer, not a warning (2026-08-03).
+        setMsg(r.reason !== undefined ? (r.ok ? r.reason : `⚠ ${r.reason}`) : '');
         await openPage(browsePage);
         refreshLib().catch(() => {});
       } finally {
@@ -2668,55 +2570,16 @@ function LibraryScreen({
             }}
           />
           {searchActive ? (
-            searchHits.length === 0 ? (
-              <Text style={[styles.modelNote, nf]}>
-                No match. Search only covers pages already read by the AI. A folder or note that is Off or never synced is invisible here. Set it to Manual/Auto and Sync to make it searchable.
-              </Text>
-            ) : (
-              <>
-                <Text style={[styles.modelNote, nf]}>
-                  {searchHits.length} result(s):
-                </Text>
-                {searchHits.map(h => (
-                  <View key={`${h.path}#${h.page}`} style={styles.libRow}>
-                    <TouchableOpacity
-                      onPress={() => openHit(h)}
-                      style={styles.libMain}>
-                      <Text style={styles.libName} numberOfLines={1}>
-                        {h.name} · p.{h.page + 1}
-                      </Text>
-                      <Text style={styles.pageTileText} numberOfLines={2}>
-                        {highlightSnippet(h.snippet, h.terms, styles.b)}
-                      </Text>
-                    </TouchableOpacity>
-                    {/* v0.53 (user request): same explicit duo as the
-                        floating window. goToNotePage closes the config —
-                        full screen, it would hide the target page. */}
-                    <TouchableOpacity
-                      onPress={() => openHit(h)}
-                      hitSlop={chipSlop}
-                      style={styles.clearMini}>
-                      <Text style={styles.clearMiniText}>Transcript</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => goToNotePage(h.path, h.page)}
-                      hitSlop={chipSlop}
-                      style={styles.clearMini}>
-                      <Text style={styles.clearMiniText}>Go to page ›</Text>
-                    </TouchableOpacity>
-                    <AddToPicker
-                      scale={scale}
-                      btnScale={btnScale}
-                      label="+ Add to ▾"
-                      agents={pickerAgents}
-                      onPick={t =>
-                        onAddContext(t, {docPath: h.path, pages: [h.page]})
-                      }
-                    />
-                  </View>
-                ))}
-              </>
-            )
+            <SearchHitsList
+              hits={searchHits}
+              autoTargets={autoTargets}
+              agents={pickerAgents}
+              scale={scale}
+              btnScale={btnScale}
+              onOpenHit={openHit}
+              onGoToPage={goToNotePage}
+              onAddContext={onAddContext}
+            />
           ) : (
             <>
               {/* v0.79.13 (user): the whole-library actions live ABOVE the

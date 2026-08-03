@@ -32,39 +32,9 @@ type Props = {
   onResults: (hits: SearchHit[], active: boolean) => void;
 };
 
-// Bold every token of `snippet` that matches one of the highlight terms
-// (accent/case-insensitive; phrases are matched word-by-word).
-const deacc = (s: string): string =>
-  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-
-export function highlightSnippet(
-  snippet: string,
-  terms: string[],
-  boldStyle: object,
-): React.ReactNode {
-  const words = new Set(
-    terms.flatMap(t => deacc(t).split(/\s+/)).filter(w => w.length >= 2),
-  );
-  if (words.size === 0) {
-    return snippet;
-  }
-  // Split keeping the separators so spacing/punctuation is preserved.
-  // wordList hoisted out of the token loop (perf audit 2026-07-20): the
-  // [...words] spread ran per token × per hit row × per re-render.
-  const wordList = [...words];
-  const parts = snippet.split(/(\s+)/);
-  return parts.map((tok, i) => {
-    const bare = deacc(tok.replace(/[^\p{L}\p{N}]/gu, ''));
-    const hit = bare.length >= 2 && wordList.some(w => bare.includes(w));
-    return hit ? (
-      <Text key={i} style={boldStyle}>
-        {tok}
-      </Text>
-    ) : (
-      tok
-    );
-  });
-}
+// Bold every token of `snippet` that matches one of the highlight terms —
+// moved to src/ui/highlightSnippet (Lot 2); re-exported for old importers.
+export {highlightSnippet} from './src/ui/highlightSnippet';
 
 export default function SearchControls({scale, onResults}: Props): React.JSX.Element {
   const [query, setQuery] = useState('');

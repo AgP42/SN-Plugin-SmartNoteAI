@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import type {PanelStyles} from './panelStyles';
 import type {ContextMode} from './src/core/convo/composeContext';
+import type {ConvMeta} from './src/native/conversationStore';
 import MarkdownView from './MarkdownView';
 
 // ---- Context sheet (v0.54: tap on the 📄 line) --------------------------
@@ -290,6 +291,91 @@ export function AddedTranscriptSheet(props: {
         </View>
         <ScrollView style={styles.ctxAddedScroll} nestedScrollEnabled={true}>
           <MarkdownView text={volet.text} scale={props.scale} />
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+// ---- History sheet (v0.21: list + resume; moved here Lot 3) -------------
+export function HistorySheet(props: {
+  styles: PanelStyles;
+  open: boolean;
+  histList: ConvMeta[];
+  currentConvId: string;
+  agents: Array<{id: string; icon: string}>;
+  confirmDelId: string | null;
+  fmtDay: (at: number) => string;
+  onResume: (m: ConvMeta) => void;
+  onDeleteConv: (id: string) => void;
+  onNewChat: () => void;
+  onClose: () => void;
+}): React.JSX.Element | null {
+  const {styles} = props;
+  if (!props.open) {
+    return null;
+  }
+  return (
+    <View style={styles.sheetWrap}>
+      <TouchableOpacity
+        style={StyleSheet.absoluteFill}
+        activeOpacity={1}
+        onPress={props.onClose}
+      />
+      <View style={styles.sheet}>
+        <View style={styles.sheetHead}>
+          <Text style={styles.sheetTitle}>Conversations</Text>
+          <TouchableOpacity
+            onPress={() => {
+              props.onNewChat();
+              props.onClose();
+            }}
+            style={styles.actBtn2}>
+            <Text style={styles.actBtn2Text}>＋ New</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={props.onClose} style={styles.sheetClose}>
+            <Text style={styles.sheetCloseText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView style={styles.sheetBody}>
+          {props.histList.length === 0 ? (
+            <Text style={styles.hint}>No saved conversations yet.</Text>
+          ) : (
+            props.histList.map(m => (
+              <View key={m.id} style={styles.histRow}>
+                <TouchableOpacity
+                  onPress={() => props.onResume(m)}
+                  style={styles.histMain}>
+                  <Text style={styles.histTitle} numberOfLines={1}>
+                    {m.id === props.currentConvId ? '(current) ' : '▸ '}
+                    {m.agentId !== undefined
+                      ? `${
+                          props.agents.find(a => a.id === m.agentId)?.icon ??
+                          '∅'
+                        } `
+                      : ''}
+                    {m.title}
+                  </Text>
+                  <Text style={styles.histDate}>{props.fmtDay(m.updatedAt)}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => props.onDeleteConv(m.id)}
+                  style={[
+                    styles.histDel,
+                    // v0.80.1 (user): armed = inverted video, everywhere.
+                    props.confirmDelId === m.id && {backgroundColor: '#000000'},
+                  ]}>
+                  <Text
+                    style={[
+                      styles.histDelText,
+                      props.confirmDelId === m.id && {color: '#ffffff'},
+                    ]}>
+                    {props.confirmDelId === m.id ? 'Delete?' : '✕'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
         </ScrollView>
       </View>
     </View>

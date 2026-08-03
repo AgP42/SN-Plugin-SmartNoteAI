@@ -484,9 +484,27 @@ export const adoptPdfDoc = (
   now: number,
 ): boolean => {
   const cur = store.docs[pdfPath];
+  // The refusal used to be "has ANY page object", which a TEXTLESS page at
+  // a path nothing was ever read at was enough to arm: a lock on a
+  // never-read page (setPageLock's stub), a blank negative-cache marker.
+  // That re-OCR'd a whole already-paid book on a move.
+  // But refusing on text/locks ALONE was worse (audit 3, two criticals):
+  // a PDF with no printed text is a perfectly normal fully-paid document
+  // (blank grid template, sketchbook — OCR returns '' for every page and
+  // the vision markers are all it holds), so the relaxed guard adopted
+  // over it and threw away its pixel markers AND its markSz doorbell; and
+  // because the destination stayed textless, the next readPdf adopted
+  // AGAIN — re-billing every annotated page on every tick, forever.
+  // `docHash` is what makes this decidable and self-terminating: it is
+  // stamped the moment a document has been read at all, and the adoption
+  // below copies it — so a second adoption always refuses.
   if (
     cur !== undefined &&
-    (cur.lock === true || Object.keys(cur.pages).length > 0)
+    (cur.lock === true ||
+      cur.docHash.length > 0 ||
+      Object.values(cur.pages).some(
+        e => e.text.trim().length > 0 || e.lock === true,
+      ))
   ) {
     return false;
   }

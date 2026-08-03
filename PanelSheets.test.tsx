@@ -11,8 +11,17 @@ jest.mock('./MarkdownView', () => {
 });
 
 import {makeStyles} from './panelStyles';
-import {ContextSheet, AddedPagesPopup, AddedTranscriptSheet} from './PanelSheets';
-import {flatText as texts, instanceText} from './src/ui/componentTestUtils';
+import {
+  ContextSheet,
+  AddedPagesPopup,
+  AddedTranscriptSheet,
+  HistorySheet,
+} from './PanelSheets';
+import {
+  flatText as texts,
+  instanceText,
+  pressByText as press,
+} from './src/ui/componentTestUtils';
 
 const styles = makeStyles(1, 1);
 
@@ -131,5 +140,90 @@ describe('AddedTranscriptSheet', () => {
     });
     expect(texts(r)).toContain('Pages ajoutées');
     expect(texts(r)).toContain('Contenu **transcrit**');
+  });
+});
+
+describe('HistorySheet', () => {
+  const meta = (id: string, title: string, agentId?: string) =>
+    ({id, title, agentId, updatedAt: new Date(2026, 7, 3, 10, 0).getTime()} as never);
+
+  it('closed: renders nothing', () => {
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(
+        <HistorySheet
+          styles={styles}
+          open={false}
+          histList={[]}
+          currentConvId="c1"
+          agents={[]}
+          confirmDelId={null}
+          fmtDay={() => '3/08'}
+          onResume={() => {}}
+          onDeleteConv={() => {}}
+          onNewChat={() => {}}
+          onClose={() => {}}
+        />,
+      );
+    });
+    expect(r.toJSON()).toBeNull();
+  });
+
+  it('lists conversations: current marker, agent icon, armed delete', () => {
+    const onResume = jest.fn();
+    const onDeleteConv = jest.fn();
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(
+        <HistorySheet
+          styles={styles}
+          open={true}
+          histList={[meta('c1', 'Budget mars'), meta('c2', 'Thèse', 'ag1')]}
+          currentConvId="c1"
+          agents={[{id: 'ag1', icon: '📚'}]}
+          confirmDelId="c2"
+          fmtDay={() => '3/08'}
+          onResume={onResume}
+          onDeleteConv={onDeleteConv}
+          onNewChat={() => {}}
+          onClose={() => {}}
+        />,
+      );
+    });
+    const t = texts(r);
+    expect(t).toContain('(current) Budget mars');
+    expect(t).toContain('📚 Thèse');
+    expect(t).toContain('Delete?'); // c2 is armed
+    press(r, 'Budget mars');
+    expect(onResume).toHaveBeenCalled();
+    press(r, 'Delete?');
+    expect(onDeleteConv).toHaveBeenCalledWith('c2');
+  });
+
+  it('empty: says so and ＋ New starts a chat then closes', () => {
+    const onNewChat = jest.fn();
+    const onClose = jest.fn();
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(
+        <HistorySheet
+          styles={styles}
+          open={true}
+          histList={[]}
+          currentConvId="c1"
+          agents={[]}
+          confirmDelId={null}
+          fmtDay={() => '3/08'}
+          onResume={() => {}}
+          onDeleteConv={() => {}}
+          onNewChat={onNewChat}
+          onClose={onClose}
+        />,
+      );
+    });
+    expect(texts(r)).toContain('No saved conversations yet.');
+    press(r, '＋ New');
+    expect(onNewChat).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
   });
 });

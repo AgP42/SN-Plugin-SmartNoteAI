@@ -529,6 +529,43 @@ describe('backup → restore round-trip (the writer/reader pair)', () => {
   });
 });
 
+describe('exportLibraryFull (pooled copy, collecte 2026-08-03)', () => {
+  it('copies every shard, reports counts, writes the backup index LAST', async () => {
+    serveFiles({
+      [INDEX]: indexJson([A, B]),
+      [`${DIR}/docs/${io.shardNameFor(A)}`]: shardJson(A, 'contenu A'),
+      [`${DIR}/docs/${io.shardNameFor(B)}`]: shardJson(B, 'contenu B'),
+    });
+    const r = await io.exportLibraryFull();
+    expect(r).toEqual({ok: true, docs: 2, failed: 0});
+    const paths = mockWriteFileBase64.mock.calls.map(c => c[0]);
+    const shardWrites = paths.filter(p =>
+      p.startsWith(`${io.LIBRARY_BACKUP_DIR}/docs/`),
+    );
+    expect(shardWrites.length).toBe(2);
+    // The index write comes after BOTH shard copies (torn-backup guard).
+    const idxAt = paths.indexOf(`${io.LIBRARY_BACKUP_DIR}/index.json`);
+    expect(idxAt).toBe(paths.length - 1);
+  });
+
+  it('an unreadable shard is counted failed and left OUT of the backup index', async () => {
+    serveFiles({
+      [INDEX]: indexJson([A, B]),
+      [`${DIR}/docs/${io.shardNameFor(A)}`]: shardJson(A),
+      // B's shard is missing (read → null)
+    });
+    const r = await io.exportLibraryFull();
+    expect(r).toEqual({ok: true, docs: 1, failed: 1});
+    const idxCall = mockWriteFileBase64.mock.calls.find(
+      c => c[0] === `${io.LIBRARY_BACKUP_DIR}/index.json`,
+    )!;
+    const written = JSON.parse(
+      Buffer.from(idxCall[1], 'base64').toString('utf8'),
+    ) as {shards: Record<string, string>};
+    expect(Object.keys(written.shards)).toEqual([A]);
+  });
+});
+
 describe('clearAllRespectingLocks (2026-08-03: locks survive even Clear ALL)', () => {
   it('spares locked docs and pages; wipes the rest', async () => {
     const s = await io.loadStore();

@@ -148,6 +148,34 @@ describe('runExport', () => {
     expect(content.toLowerCase()).toContain('not read');
   });
 
+  it('an all-blank doc gets NO "Transcript source" clause (collecte 2026-08-03)', async () => {
+    mockLoadStore.mockResolvedValue(
+      storeWith([
+        {path: NOTE, page: 0, text: ''},
+        {path: NOTE, page: 1, text: '  '},
+      ]),
+    );
+    await runExport(deps(2), [NOTE], {fmt: 'md', now: NOW});
+    const content = writes.get(`${EXPORT_ROOT}/meeting.md`)!;
+    expect(content).not.toContain('Transcript source');
+    expect(content).not.toContain('Mistral');
+    expect(content).toContain('(blank page)');
+  });
+
+  it('a mixed doc keeps its real source label — blanks stay out of it', async () => {
+    mockLoadStore.mockResolvedValue(
+      storeWith([
+        {path: NOTE, page: 0, text: 'du texte', at: 1_700_000_000_000},
+        {path: NOTE, page: 1, text: '', at: 1_800_000_000_000},
+      ]),
+    );
+    await runExport(deps(2), [NOTE], {fmt: 'md', now: NOW});
+    const content = writes.get(`${EXPORT_ROOT}/meeting.md`)!;
+    expect(content).toContain('Transcript source: Mistral OCR');
+    // The blank entry's (later) datetime must not drive the header.
+    expect(content).toContain(fmtExportDate(1_700_000_000_000));
+  });
+
   it('mirrors the folder tree under /EXPORT when baseDir is given', async () => {
     mockLoadStore.mockResolvedValue(storeWith([{path: NOTE, page: 0, text: 'x'}]));
     const r = await runExport(deps(1), [NOTE], {
