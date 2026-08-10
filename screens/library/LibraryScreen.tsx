@@ -8,6 +8,7 @@
  */
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
+  AppState,
   DeviceEventEmitter,
   NativeModules,
   ScrollView,
@@ -303,6 +304,10 @@ function LibraryScreen({
     treeCacheRef.current = treeCache;
   }, [treeCache]);
   const [treeExpanded, setTreeExpanded] = useState<Set<string>>(new Set());
+  const treeExpandedRef = useRef(treeExpanded);
+  useEffect(() => {
+    treeExpandedRef.current = treeExpanded;
+  }, [treeExpanded]);
   // v0.63 (user): filter the tree to files whose EFFECTIVE mode matches;
   // tap the active chip again to clear.
   // fix #6: multi-select sync-mode filter (empty = show all).
@@ -781,6 +786,36 @@ function LibraryScreen({
     return kids;
   }, []);
 
+  // The tree is a CACHE of native directory listings: listFolder fills a
+  // folder once and toggleExpand deliberately reuses it (a re-expand must
+  // feel instant). Nothing ever invalidated it — and PluginHost keeps this
+  // screen MOUNTED across close/open, so a file renamed on the device while
+  // we were hidden kept showing its OLD name, and "Go to page" on that row
+  // opened a path that no longer exists (device report 2026-08-10).
+  // Re-reading only the folders the user actually has open keeps it cheap.
+  const refreshOpenFolders = useCallback(async (): Promise<void> => {
+    // The once-per-session full walk is a flat list of every file found; a
+    // renamed file is absent from it and its old name lingers, so the count
+    // sweep must be allowed to walk again too.
+    fullWalk.done = false;
+    fullWalk.files.length = 0;
+    for (const p of [...treeExpandedRef.current]) {
+      await listFolder(p);
+    }
+  }, [listFolder]);
+
+  // "The plugin view came back to the foreground" — the one reliable signal
+  // that the user may have been renaming/moving files behind our back (the
+  // same reasoning as App's poke listener, which cannot see this cache).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', st => {
+      if (st === 'active') {
+        refreshOpenFolders().catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, [refreshOpenFolders]);
+
   const toggleExpand = useCallback(
     (path: string) => {
       setTreeExpanded(s => {
@@ -1069,6 +1104,11 @@ function LibraryScreen({
     }
     setCheckingAll(true);
     try {
+      // "Check changes" is THE deep path: re-read the file tree from disk
+      // first, so a file renamed or moved since the last visit is seen
+      // under its real name before anything is counted (2026-08-10).
+      setCheckStatus('Re-reading the file tree…');
+      await refreshOpenFolders();
       const tracked = await resolveTrackedNotes(autoTargets);
       const notes = [...tracked.entries()]
         .filter(([p, t]) => t.mode === 'manual' && isNotePath(p))
@@ -1140,7 +1180,7 @@ function LibraryScreen({
     } finally {
       setCheckingAll(false);
     }
-  }, [checkingAll, autoTargets, refreshLib]);
+  }, [checkingAll, autoTargets, refreshLib, refreshOpenFolders]);
 
   // Cycle a folder/note's sync MODE through ONE ordered list, so every state
   // is reachable with a single tap. (Old bug: a special-case "drop the

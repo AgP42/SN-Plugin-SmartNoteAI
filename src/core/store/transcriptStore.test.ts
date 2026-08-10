@@ -1,4 +1,6 @@
 import {
+  soleDonorDoc,
+  retireRenamedDoc,
   isPageLocked,
   setPageLock,
   sanitizeDocEntry,
@@ -532,6 +534,56 @@ describe('buildPageIdDonors', () => {
     const donors = buildPageIdDonors(s, '/self.note');
     expect([...donors.keys()]).toEqual(['P20260101000000001']);
     expect(donors.get('P20260101000000001')!.text).toBe('A0');
+  });
+});
+
+describe('soleDonorDoc / retireRenamedDoc (rename follow-through)', () => {
+  const OLD = '/Note/Work/Réunion.note';
+  const NEW = '/Note/Work/Réunion 2026.note';
+  const P1 = 'P20260101000000001';
+  const P2 = 'P20260101000000002';
+  const P3 = 'P20260101000000003';
+  const withPages = (s: Store, path: string, ids: string[]): void => {
+    ids.forEach((id, i) =>
+      upsertPage(s, path, i, {text: `p${i}`, source: 'mistral-ocr', at: 1, hash: id}, 1),
+    );
+  };
+
+  it('names the donor when ONE doc holds exactly the adopted pages', () => {
+    const s = emptyStore();
+    withPages(s, OLD, [P1, P2]);
+    withPages(s, NEW, [P1, P2]);
+    expect(soleDonorDoc(s, NEW, [P1, P2])).toBe(OLD);
+  });
+
+  it('refuses when the donor keeps pages of its own (a few pages moved, not a rename)', () => {
+    const s = emptyStore();
+    withPages(s, OLD, [P1, P2, P3]); // P3 stays behind
+    expect(soleDonorDoc(s, NEW, [P1, P2])).toBeNull();
+  });
+
+  it('refuses when two docs could be the donor', () => {
+    const s = emptyStore();
+    withPages(s, OLD, [P1]);
+    withPages(s, '/Note/copy.note', [P1]);
+    expect(soleDonorDoc(s, NEW, [P1])).toBeNull();
+  });
+
+  it('retires the ghost and carries its document lock to the new path', () => {
+    const s = emptyStore();
+    withPages(s, OLD, [P1]);
+    withPages(s, NEW, [P1]);
+    setDocLock(s, OLD, true);
+    expect(retireRenamedDoc(s, OLD, NEW)).toBe(true);
+    expect(s.docs[OLD]).toBeUndefined(); // no stub left behind
+    expect(s.docs[NEW].lock).toBe(true); // the freeze followed the file
+  });
+
+  it('never retires when the destination does not exist yet', () => {
+    const s = emptyStore();
+    withPages(s, OLD, [P1]);
+    expect(retireRenamedDoc(s, OLD, NEW)).toBe(false);
+    expect(s.docs[OLD]).toBeDefined();
   });
 });
 

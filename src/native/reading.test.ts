@@ -35,6 +35,12 @@ import {
 } from '../core/store/transcriptStore';
 
 jest.mock('./fetchAdapter', () => ({fetchAdapter: jest.fn()}));
+// Native seam: it lists directories and writes settings. The reading tests
+// only care THAT a proven rename is followed through, with which paths.
+jest.mock('./renameFollow', () => ({
+  provenGone: jest.fn(async () => false),
+  followRename: jest.fn(async () => undefined),
+}));
 // The Off gate (audit 2026-07-18) reads settings; untracked = 'manual'.
 jest.mock('./settings', () => ({readSettings: jest.fn(async () => ({}))}));
 jest.mock('./noteTranscripts', () => ({
@@ -978,6 +984,15 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
     expect(getPage(s, NOTE, 1)!.va).toBeUndefined();
   });
 
+  it('the page LOCK travels with the page — a rename never unfreezes a correction', async () => {
+    const s = storeState.store;
+    upsertPage(s, OLD_NOTE, 0, entry(PA, {text: 'corrigé à la main', source: 'user', lock: true}), 1);
+    upsertPage(s, OLD_NOTE, 1, entry(PB, {text: 'libre'}), 1);
+    await pagesNeedingRead(baseDeps(), NOTE, [0, 1]);
+    expect(getPage(s, NOTE, 0)!.lock).toBe(true); // frozen, like adoptPdfDoc
+    expect(getPage(s, NOTE, 1)!.lock).toBeUndefined(); // and only that page
+  });
+
   it('the pixel identity (vh) travels with the page — no bootstrap read after a move', async () => {
     const s = storeState.store;
     upsertPage(s, OLD_NOTE, 0, entry(PA, {text: 'Un', rev: 'x1', vh: 'nh:cafe1234'}), 1);
@@ -995,6 +1010,43 @@ describe('relocation by PAGEID (pagesNeedingRead)', () => {
     upsertPage(s, '/Note/other.note', 0, entry(PA, {text: 'donor'}), 1);
     expect(await pagesNeedingRead(baseDeps(), NOTE, [0, 1])).toEqual([0]);
     expect(getPage(s, NOTE, 0)!.text).toBe('stale'); // untouched, will be re-read
+  });
+
+  describe('rename follow-through', () => {
+    const renameMock = jest.requireMock('./renameFollow') as {
+      provenGone: jest.Mock;
+      followRename: jest.Mock;
+    };
+
+    it('donor file PROVEN gone → the rename is followed through', async () => {
+      const s = storeState.store;
+      upsertPage(s, OLD_NOTE, 0, entry(PA, {text: 'Un'}), 1);
+      upsertPage(s, OLD_NOTE, 1, entry(PB, {text: 'Deux'}), 1);
+      renameMock.provenGone.mockResolvedValueOnce(true);
+      await pagesNeedingRead(baseDeps(), NOTE, [0, 1]);
+      expect(renameMock.provenGone).toHaveBeenCalledWith(OLD_NOTE);
+      expect(renameMock.followRename).toHaveBeenCalledWith(OLD_NOTE, NOTE);
+    });
+
+    it('donor file still there (a COPY) → nothing is migrated or removed', async () => {
+      const s = storeState.store;
+      upsertPage(s, OLD_NOTE, 0, entry(PA, {text: 'Un'}), 1);
+      upsertPage(s, OLD_NOTE, 1, entry(PB, {text: 'Deux'}), 1);
+      renameMock.provenGone.mockResolvedValueOnce(false);
+      await pagesNeedingRead(baseDeps(), NOTE, [0, 1]);
+      expect(renameMock.followRename).not.toHaveBeenCalled();
+      expect(getPage(s, OLD_NOTE, 0)!.text).toBe('Un'); // donor intact
+    });
+
+    it('only SOME of the donor moved → not a rename, never followed', async () => {
+      const s = storeState.store;
+      upsertPage(s, OLD_NOTE, 0, entry(PA, {text: 'Un'}), 1);
+      upsertPage(s, OLD_NOTE, 1, entry(PB, {text: 'Deux'}), 1);
+      upsertPage(s, OLD_NOTE, 2, entry(PC, {text: 'Trois'}), 1); // stays behind
+      renameMock.provenGone.mockResolvedValue(true);
+      await pagesNeedingRead(baseDeps(), NOTE, [0, 1]);
+      expect(renameMock.followRename).not.toHaveBeenCalled();
+    });
   });
 
   it('a locked destination doc is frozen — no free write either (spec S6)', async () => {
@@ -1275,6 +1327,70 @@ describe('PDF adoption by identity (readPdf)', () => {
     });
     expect(r.ok).toBe(true);
     expect(getPage(s, NEW_PDF, 0)!.text).toContain('fresh text');
+  });
+
+  // 2026-08-10: a RENAMED PDF changes basename, so the same-name adoption
+  // can never match it — the whole already-paid book was re-OCR'd.
+  describe('renamed PDF', () => {
+    const renameMock = jest.requireMock('./renameFollow') as {
+      provenGone: jest.Mock;
+      followRename: jest.Mock;
+    };
+    const RENAMED = '/Document/doc 2026.pdf'; // same folder as PDF, new name
+    const seedDonor = (): void => {
+      const s = storeState.store;
+      upsertPage(s, PDF, 0, entry('', {text: 'texte payé'}), 1);
+      setDocHash(s, PDF, '5000');
+      (
+        jest.requireMock('./noteTranscripts') as {readFileSize: jest.Mock}
+      ).readFileSize.mockImplementation(async (p: string) =>
+        p === RENAMED ? 5000 : null,
+      );
+    };
+
+    it('donor PROVEN gone and unique → adopted for free, rename followed', async () => {
+      const s = storeState.store;
+      seedDonor();
+      renameMock.provenGone.mockResolvedValue(true);
+      route({}); // any API call would throw 'unrouted'
+      const r = await readPdf(baseDeps(), 'k', 'sys', RENAMED, {skipVision: true});
+      expect(r.ok).toBe(true);
+      expect(getPage(s, RENAMED, 0)!.text).toBe('texte payé');
+      expect(fetchMock).not.toHaveBeenCalled(); // nothing re-billed
+      expect(renameMock.followRename).toHaveBeenCalledWith(PDF, RENAMED);
+    });
+
+    it('donor still on disk → NOT a rename, the new file is read normally', async () => {
+      seedDonor();
+      renameMock.provenGone.mockResolvedValue(false);
+      route({ocr: () => ocrRes('lu à neuf', GOOD)});
+      await readPdf(baseDeps(), 'k', 'sys', RENAMED, {skipVision: true});
+      expect(getPage(storeState.store, RENAMED, 0)!.text).toContain('lu à neuf');
+      expect(renameMock.followRename).not.toHaveBeenCalled();
+    });
+
+    it('two gone candidates of the same size → refuses to guess, reads fresh', async () => {
+      const s = storeState.store;
+      seedDonor();
+      upsertPage(s, '/Document/autre.pdf', 0, entry('', {text: 'autre livre'}), 1);
+      setDocHash(s, '/Document/autre.pdf', '5000');
+      renameMock.provenGone.mockResolvedValue(true);
+      route({ocr: () => ocrRes('lu à neuf', GOOD)});
+      await readPdf(baseDeps(), 'k', 'sys', RENAMED, {skipVision: true});
+      expect(getPage(s, RENAMED, 0)!.text).toContain('lu à neuf');
+      expect(renameMock.followRename).not.toHaveBeenCalled();
+    });
+
+    it('a different folder is never a rename candidate', async () => {
+      const s = storeState.store;
+      seedDonor();
+      renameMock.provenGone.mockResolvedValue(true);
+      route({ocr: () => ocrRes('lu à neuf', GOOD)});
+      await readPdf(baseDeps(), 'k', 'sys', '/Autre/doc 2026.pdf', {
+        skipVision: true,
+      });
+      expect(getPage(s, '/Autre/doc 2026.pdf', 0)!.text).toContain('lu à neuf');
+    });
   });
 
   // Audit 3 #3: an Off-consent read promises to store nothing, and its wipe

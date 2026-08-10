@@ -135,6 +135,20 @@ export const cancelManualSync = (path?: string): void => {
   }
   persistManualWanted();
 };
+// The file this order was placed on was RENAMED (2026-08-10). The engine
+// deliberately never prunes on absence, so without this the order sits
+// inert forever — and a non-empty manualWanted keeps the unattended spend
+// cap bypassed for the whole session (see mayPayFor). ONE writer: this
+// module owns manualSyncWanted, so the rename follow-through calls in.
+export const renameManualWanted = (from: string, to: string): void => {
+  if (!manualWanted.has(from)) {
+    return;
+  }
+  manualWanted.delete(from);
+  manualWanted.add(to);
+  persistManualWanted();
+};
+
 const persistManualWanted = (): void => {
   updateSettings({manualSyncWanted: [...manualWanted]}).catch(() => {});
 };

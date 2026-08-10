@@ -467,6 +467,72 @@ export const buildPageIdDonors = (
   return out;
 };
 
+// The doc that donated EVERY one of these PAGEIDs — and holds nothing
+// else. That is the signature of a RENAMED (or moved) FILE, as opposed to
+// a few pages carried from one note into another: the whole donor is
+// accounted for at the destination. Returns null unless exactly one doc
+// qualifies, so an ambiguous history never triggers a migration.
+// Evidence about the FILE (is it really gone?) is the caller's job.
+export const soleDonorDoc = (
+  store: Store,
+  excludePath: string,
+  pageIds: readonly string[],
+): string | null => {
+  const wanted = new Set(pageIds.filter(looksLikePageId));
+  if (wanted.size === 0) {
+    return null;
+  }
+  let found: string | null = null;
+  for (const [dp, doc] of Object.entries(store.docs)) {
+    if (dp === excludePath) {
+      continue;
+    }
+    const ids = Object.values(doc.pages)
+      .filter(e => e.eph !== true)
+      .map(e => e.hash)
+      .filter(looksLikePageId);
+    if (ids.length === 0) {
+      continue;
+    }
+    // Every page of this doc must be one of the adopted ones (nothing left
+    // behind), and together they must cover all of them.
+    if (ids.some(id => !wanted.has(id))) {
+      continue;
+    }
+    if (!([...wanted].every(id => ids.includes(id)))) {
+      continue;
+    }
+    if (found !== null) {
+      return null; // two candidates: refuse to guess
+    }
+    found = dp;
+  }
+  return found;
+};
+
+// Retire a doc whose file was RENAMED, once its pages live on elsewhere.
+// The document-level lock is the one thing that must survive the move —
+// it is a standing user decision about this content, not about a path.
+export const retireRenamedDoc = (
+  store: Store,
+  from: string,
+  to: string,
+): boolean => {
+  const old = store.docs[from];
+  if (old === undefined || store.docs[to] === undefined) {
+    return false;
+  }
+  if (old.lock === true && store.docs[to].lock !== true) {
+    store.docs[to].lock = true;
+    markDocTouched(to);
+  }
+  // removeDoc keeps a locked stub by design (spec S6) — here the lock has
+  // just been carried to the destination, so drop it first and let the
+  // ghost go completely.
+  delete old.lock;
+  return removeDoc(store, from);
+};
+
 // Whole-PDF adoption: the store has nothing usable for pdfPath, but
 // another doc with the SAME file name and SAME printed byte length is
 // covered — the file was moved (or copied). Deep-copies the pages;
@@ -512,40 +578,111 @@ export const adoptPdfDoc = (
   if (base.length === 0 || byteLen <= 0) {
     return false;
   }
-  const hash = String(byteLen);
-  for (const [dp, doc] of Object.entries(store.docs)) {
+  for (const dp of Object.keys(store.docs)) {
     if (dp === pdfPath || (dp.split('/').pop() ?? '') !== base) {
       continue;
     }
-    const bar = doc.docHash.indexOf('|');
-    const prefix = bar >= 0 ? doc.docHash.slice(0, bar) : doc.docHash;
-    if (prefix !== hash) {
-      continue;
+    if (copyPdfDoc(store, dp, pdfPath, byteLen, now)) {
+      return true;
     }
-    const pages: Record<string, PageEntry> = {};
-    for (const [k, e] of Object.entries(doc.pages)) {
-      if (e.eph === true) {
-        continue;
-      }
-      pages[k] = {
-        ...e,
-        low: e.low !== undefined ? e.low.map(w => ({...w})) : undefined,
-      };
-    }
-    if (Object.keys(pages).length === 0) {
-      continue;
-    }
-    store.docs[pdfPath] = {
-      usedAt: now,
-      docHash: prefix, // bytes-only — no doorbell, annotations re-settle free
-      pages,
-      stars: [],
-      kws: [],
-    };
-    markDocTouched(pdfPath);
-    return true;
   }
   return false;
+};
+
+// The printed-bytes prefix of a doc's hash ('' when never read).
+const bytesPrefix = (doc: DocEntry): string => {
+  const bar = doc.docHash.indexOf('|');
+  return bar >= 0 ? doc.docHash.slice(0, bar) : doc.docHash;
+};
+
+// Copy one PDF doc onto another path. Shared by the same-name adoption
+// (a MOVE) and the rename follow-through, so the two can never drift.
+const copyPdfDoc = (
+  store: Store,
+  from: string,
+  to: string,
+  byteLen: number,
+  now: number,
+): boolean => {
+  const doc = store.docs[from];
+  if (doc === undefined || bytesPrefix(doc) !== String(byteLen)) {
+    return false;
+  }
+  const pages: Record<string, PageEntry> = {};
+  for (const [k, e] of Object.entries(doc.pages)) {
+    if (e.eph === true) {
+      continue;
+    }
+    pages[k] = {
+      ...e,
+      low: e.low !== undefined ? e.low.map(w => ({...w})) : undefined,
+    };
+  }
+  if (Object.keys(pages).length === 0) {
+    return false;
+  }
+  store.docs[to] = {
+    usedAt: now,
+    docHash: bytesPrefix(doc), // bytes-only — annotations re-settle free
+    pages,
+    stars: [],
+    kws: [],
+  };
+  markDocTouched(to);
+  return true;
+};
+
+// A RENAMED PDF changes its basename, so the adoption above can never
+// match it and the whole already-paid document was re-OCR'd and
+// re-Visioned from scratch (2026-08-10). The identity that survives a
+// rename is the printed byte length, which is far too weak on its own —
+// so this only lists CANDIDATES, in the same folder, and the caller must
+// prove the file is really gone before adopting from it. If more than one
+// candidate survives that proof, the caller must refuse: showing another
+// document's text would be much worse than paying again.
+export const pdfRenameCandidates = (
+  store: Store,
+  pdfPath: string,
+  byteLen: number,
+): string[] => {
+  if (byteLen <= 0 || !/\.pdf$/i.test(pdfPath)) {
+    return [];
+  }
+  const cut = pdfPath.lastIndexOf('/');
+  const dir = cut <= 0 ? '' : pdfPath.slice(0, cut);
+  const hash = String(byteLen);
+  return Object.entries(store.docs)
+    .filter(
+      ([dp, doc]) =>
+        dp !== pdfPath &&
+        /\.pdf$/i.test(dp) &&
+        dp.slice(0, dp.lastIndexOf('/')) === dir &&
+        bytesPrefix(doc) === hash &&
+        Object.values(doc.pages).some(e => e.eph !== true),
+    )
+    .map(([dp]) => dp);
+};
+
+// Adopt from ONE donor the caller has proven gone (see pdfRenameCandidates).
+export const adoptRenamedPdfDoc = (
+  store: Store,
+  donorPath: string,
+  pdfPath: string,
+  byteLen: number,
+  now: number,
+): boolean => {
+  const cur = store.docs[pdfPath];
+  if (
+    cur !== undefined &&
+    (cur.lock === true ||
+      cur.docHash.length > 0 ||
+      Object.values(cur.pages).some(
+        e => e.text.trim().length > 0 || e.lock === true,
+      ))
+  ) {
+    return false; // same protection as the same-name adoption
+  }
+  return copyPdfDoc(store, donorPath, pdfPath, byteLen, now);
 };
 
 // Realign a .note doc's entries to the CURRENT page order (pageIds[i] =

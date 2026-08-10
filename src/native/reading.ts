@@ -72,8 +72,12 @@ import {
   isDocLocked,
   looksLikePageId,
   buildPageIdDonors,
+  soleDonorDoc,
   adoptPdfDoc,
+  pdfRenameCandidates,
+  adoptRenamedPdfDoc,
 } from '../core/store/transcriptStore';
+import {provenGone, followRename} from './renameFollow';
 
 export const PARALLEL_READS = 4;
 
@@ -475,6 +479,13 @@ export const pagesNeedingRead = async (
             // the render ever differs, the check simply fails closed into
             // one normal paid read — nothing can be wrongly skipped.
             vh: donor.vh,
+            // The FREEZE travels with the page, exactly like adoptPdfDoc
+            // does for a moved PDF ("the freeze was about its content").
+            // Without this a rename silently unlocked every hand-verified
+            // page: the text arrived identical, so nothing looked wrong —
+            // until the ink changed and Auto overwrote the correction the
+            // lock existed to protect (2026-08-10).
+            lock: donor.lock,
             low:
               donor.low !== undefined
                 ? donor.low.map(w => ({...w}))
@@ -490,6 +501,19 @@ export const pagesNeedingRead = async (
       `${notePath.split('/').pop()}: ${relocated.length} page(s) recovered ` +
         'by PAGEID (moved/copied — not re-billed)',
     );
+    // Was that a RENAME rather than a copy? One donor doc, entirely
+    // accounted for here, whose file is PROVEN gone. Then everything the
+    // user attached to the old path must follow (sync mode, agents, lock,
+    // standing order) and the ghost entry must go — it used to show the
+    // note twice in the Library with a dead "Go to page" (2026-08-10).
+    const donorPath = soleDonorDoc(
+      await loadStore(),
+      notePath,
+      relocated.map(([p]) => ids.get(p) ?? ''),
+    );
+    if (donorPath !== null && (await provenGone(donorPath))) {
+      await followRename(donorPath, notePath);
+    }
   }
   if (backfill.length > 0) {
     await mutateStore(s => {
@@ -2137,6 +2161,43 @@ export const readPdf = async (
             `${pdfPath.split('/').pop()}: transcripts adopted by identity ` +
               '(moved/copied PDF — not re-billed)',
           );
+        } else {
+          // RENAMED PDF (2026-08-10): the basename changed, so the adoption
+          // above can never match and the whole already-paid document was
+          // re-OCR'd from scratch. The only identity that survives a rename
+          // is the printed byte length — far too weak alone, so we demand:
+          // same folder, the donor's file PROVEN gone, and EXACTLY ONE such
+          // candidate. Two candidates and we pay again rather than risk
+          // showing another document's text.
+          const cands = pdfRenameCandidates(store, pdfPath, byteLen);
+          const gone: string[] = [];
+          for (const c of cands) {
+            if (await provenGone(c)) {
+              gone.push(c);
+            }
+          }
+          if (gone.length === 1) {
+            const donor = gone[0];
+            let took = false;
+            await mutateStore(s => {
+              took = adoptRenamedPdfDoc(s, donor, pdfPath, byteLen, Date.now());
+              return took;
+            });
+            if (took) {
+              console.log(
+                '[SmartNoteAI.read]',
+                `${pdfPath.split('/').pop()}: transcripts adopted from ` +
+                  `${donor.split('/').pop()} (renamed PDF — not re-billed)`,
+              );
+              await followRename(donor, pdfPath);
+            }
+          } else if (gone.length > 1) {
+            console.log(
+              '[SmartNoteAI.read]',
+              `${pdfPath.split('/').pop()}: ${gone.length} possible renamed ` +
+                'donors — refusing to guess, reading it fresh',
+            );
+          }
         }
       }
       if (
