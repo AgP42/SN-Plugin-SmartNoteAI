@@ -85,7 +85,14 @@ export function AgentGapsDialog(props: {
 // ---- Big-read estimate (> 100 pages, decision U2) -----------------------
 export function EstimateDialog(props: {
   styles: PanelStyles;
-  ask: {count: number; euros: string} | null;
+  ask: {
+    count: number;
+    euros: string;
+    // Present when the real page count cannot be known (an unread PDF): the
+    // dialog then states a RANGE rather than a number it cannot back up.
+    upTo?: number;
+    eurosUpTo?: string;
+  } | null;
   onCancel: () => void;
   onRead: () => void;
 }): React.JSX.Element | null {
@@ -93,12 +100,14 @@ export function EstimateDialog(props: {
   if (ask === null) {
     return null;
   }
+  const ranged = ask.upTo !== undefined && ask.eurosUpTo !== undefined;
   return (
     <View style={styles.sheetWrap}>
       <View style={styles.dialog}>
         <Text style={styles.dialogText}>
-          Read {ask.count} pages?{'\n'}
-          Cost ≈ {ask.euros}€ · takes a few minutes.
+          {ranged
+            ? `Read this whole document?\nIts length is not known before reading it — roughly ${ask.count}–${ask.upTo} pages, ${ask.euros}–${ask.eurosUpTo}€.`
+            : `Read ${ask.count} pages?\nCost ≈ ${ask.euros}€ · takes a few minutes.`}
         </Text>
         <View style={styles.sheetBtns}>
           <TouchableOpacity onPress={props.onCancel} style={styles.actBtn2}>

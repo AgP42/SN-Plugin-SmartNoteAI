@@ -11,7 +11,7 @@
 //
 // Everything here is PURE: the callers own the evidence that a rename
 // actually happened, and the writes.
-import type {AutoTarget} from './autoEngine';
+import type {AutoTarget, AutoMode} from './autoEngine';
 import type {Agent} from '../agents/agents';
 
 // A file rename never changes a FOLDER key, so only exact matches move.
@@ -76,6 +76,42 @@ export const migrateAgentPaths = (
     return out;
   });
   return touched ? next : null;
+};
+
+// Release audit 2026-08-12 (critical, privacy): the rename follow-through
+// above is inferred from PAID TRANSCRIPTS being relocated — so it can never
+// fire for a document that was set to Off and never read, which is exactly
+// the case it was written for. Renaming such a file left no entry at the new
+// path, it inherited its folder's mode, and a private notebook the user had
+// excluded could be read, billed and sent to the AI.
+//
+// This decides it from the SETTINGS alone: one explicit entry in the same
+// folder whose file is proven gone, and no other candidate. The inference is
+// deliberately FAIL-SAFE — it is applied only when the orphaned mode is MORE
+// restrictive than what the path would inherit, so being wrong can only ever
+// make the plugin read LESS, never more.
+const STRICTNESS: Record<AutoMode, number> = {off: 2, manual: 1, auto: 0};
+
+export const orphanedModeFor = (
+  targets: Record<string, AutoTarget>,
+  path: string,
+  // Explicit target paths in this folder whose file the caller has PROVEN
+  // absent (an empty or failed directory listing proves nothing — see
+  // provenGone).
+  goneInFolder: readonly string[],
+  inherited: AutoMode,
+): {from: string; mode: AutoMode} | null => {
+  if (targets[path] !== undefined) {
+    return null; // the path speaks for itself
+  }
+  const cands = goneInFolder.filter(p => p !== path && targets[p] !== undefined);
+  if (cands.length !== 1) {
+    return null; // nothing to adopt, or an ambiguity we refuse to guess
+  }
+  const mode = targets[cands[0]].mode;
+  return STRICTNESS[mode] > STRICTNESS[inherited]
+    ? {from: cands[0], mode}
+    : null;
 };
 
 // A standing "Sync now" order for a path that no longer exists never

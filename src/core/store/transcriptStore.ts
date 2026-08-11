@@ -487,8 +487,13 @@ export const soleDonorDoc = (
     if (dp === excludePath) {
       continue;
     }
+    // Same filter buildPageIdDonors applies: an entry with no text never
+    // donates, so it is never among the relocated pages either. Counting it
+    // here made the donor look "not fully accounted for" and killed the
+    // whole rename inference — one blank page in a notebook was enough
+    // (release audit 2026-08-12).
     const ids = Object.values(doc.pages)
-      .filter(e => e.eph !== true)
+      .filter(e => e.eph !== true && e.text.trim().length > 0)
       .map(e => e.hash)
       .filter(looksLikePageId);
     if (ids.length === 0) {

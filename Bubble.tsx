@@ -19,6 +19,7 @@ import {
   PanResponder,
   StyleSheet,
   Text,
+  ToastAndroid,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -137,6 +138,14 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       captureCurrent(captureBridge())
         .then(cap => {
           if (cap === null) {
+            // Release audit 2026-08-12: this returned in silence, and the
+            // overlay has no message line — on the surface a first-time
+            // user actually meets, the tap was indistinguishable from a
+            // frozen plugin. The hosted copy of this menu already says it.
+            ToastAndroid.show(
+              'No note or PDF is open right now.',
+              ToastAndroid.SHORT,
+            );
             return;
           }
           openHosted('library', {
@@ -144,7 +153,12 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
             page: pageLevel ? cap.page : null,
           });
         })
-        .catch(() => {});
+        .catch(() => {
+          ToastAndroid.show(
+            'Could not read the current file.',
+            ToastAndroid.SHORT,
+          );
+        });
     },
     [openHosted],
   );

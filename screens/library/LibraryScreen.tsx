@@ -10,6 +10,7 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   AppState,
   DeviceEventEmitter,
+  ToastAndroid,
   NativeModules,
   ScrollView,
   Text,
@@ -2390,14 +2391,30 @@ function LibraryScreen({
         openNoteAt?: (p: string, page: number) => Promise<unknown>;
       }
     ).openNoteAt;
+    // Release audit 2026-08-12: the outcome was discarded and the config
+    // closed anyway, so on a device whose note-app component differs the
+    // button silently did nothing and left the user staring at their page.
+    // The native side RESOLVES {success:false} — it does not reject.
+    let opened: Promise<unknown> | null = null;
     try {
       const r = ov?.(path, page + 1);
-      if (r && typeof (r as Promise<unknown>).then === 'function') {
-        (r as Promise<unknown>).catch(() => {});
-      }
+      opened =
+        r && typeof (r as Promise<unknown>).then === 'function'
+          ? (r as Promise<unknown>)
+          : null;
     } catch {
       // best-effort
     }
+    opened
+      ?.then(res => {
+        if ((res as {success?: boolean})?.success === false) {
+          ToastAndroid.show(
+            'Could not open that document on this device.',
+            ToastAndroid.LONG,
+          );
+        }
+      })
+      .catch(() => {});
     setUiDocOpen(false); // leaving the config — release the browse marker
     const close = (): void => {
       setTimeout(() => PluginManager.closePluginView(), 150);
@@ -2513,8 +2530,11 @@ function LibraryScreen({
                   FULL_PAGE_READ_CENTS,
                 )}€). `
               : ''}
+            {/* Release audit 2026-08-12: "one cheap OCR call each" was
+                false and expensive — reading an unread PDF OCRs EVERY page
+                of it and then runs a Vision call per page. Say so. */}
             {exportAsk.pdfDocs > 0
-              ? `${exportAsk.pdfDocs} PDF(s) not read yet (one cheap OCR call each). `
+              ? `${exportAsk.pdfDocs} PDF(s) not read yet — each one is read in FULL (every page, OCR + Vision), and their length is not known in advance. `
               : ''}
             Read them first, or export what the library has (gaps are marked)?
           </Text>
@@ -2825,9 +2845,19 @@ function LibraryScreen({
                                 (syncBusy || !canSync) && styles.smallBtnOff,
                               ]}>
                               <Text style={styles.syncBtnDarkText}>
+                                {/* Release audit 2026-08-12: an unread PDF
+                                    counts as ONE page here (the host reports
+                                    1 page for a PDF), so the euro figure was
+                                    far under the real bill. Show "+" and the
+                                    count of documents whose length we cannot
+                                    know until we read them. */}
                                 {syncKind === 'now'
                                   ? `Syncing… ${syncingNote ?? ''}`
-                                  : `Sync now · ~${eurosTotal(toSync, centsFull)} €`}
+                                  : `Sync now · ~${eurosTotal(toSync, centsFull)} €${
+                                      syncFrame.agg.manual.pdfUnknown > 0
+                                        ? ` + ${syncFrame.agg.manual.pdfUnknown} PDF of unknown length`
+                                        : ''
+                                    }`}
                               </Text>
                             </TouchableOpacity>
                           ) : null,

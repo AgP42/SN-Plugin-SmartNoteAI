@@ -33,7 +33,19 @@ export const captureBridge = (): CaptureDeps => ({
   // themselves; the SYNC STATUS explains which host each type needs.)
   saveCurrentNote: () => (PluginNoteAPI as any).saveCurrentNote(),
   // v0.82 (user): PDF handwritten-annotation (.mark) reading.
-  getMarkPages: filePath => (PluginFileAPI as any).getMarkPages(filePath),
+  // Release audit 2026-08-12: this wired the dep UNCONDITIONALLY, so
+  // getMarkPagesList's "the SDK has no ink layer at all → []" branch was
+  // unreachable — PluginFileAPI.getMarkPages is a JS wrapper that always
+  // exists, and on a firmware whose native side lacks it the call rejects,
+  // which getMarkPagesList reads as "could not list, defer". PDF Vision
+  // then deferred forever, with no message. Only wire it when the SDK
+  // really carries the method.
+  ...((PluginFileAPI as any).getMarkPages !== undefined
+    ? {
+        getMarkPages: (filePath: string) =>
+          (PluginFileAPI as any).getMarkPages(filePath),
+      }
+    : {}),
   // ⚠ Param order verified ON DEVICE (logcat verifyParams, 2026-08-03):
   // the lib wants (notePath, page) — the docs' quick-ref table says the
   // opposite and cost a silent probe failure (v1.0.2's blank skip never

@@ -49,7 +49,10 @@ export const fmtExportDate = (epochMs: number): string => {
 
 export type ExportGaps = {
   notePages: number; // missing .note pages (billable count, per page)
-  pdfDocs: number; // PDFs with no transcript at all (one OCR call each)
+  // PDFs with no transcript at all. NOT "one cheap call": reading one OCRs
+  // every page of the file and then Visions every page (release audit
+  // 2026-08-12 — the dialog used to describe it as cheap).
+  pdfDocs: number;
 };
 
 // How much is missing from the store for these docs. Notes get an exact

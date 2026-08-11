@@ -55,8 +55,11 @@ import {
 import {
   resolveAutoTarget,
   isAutoFolderKey,
+  DEFAULT_MODE,
   type AutoTarget,
 } from '../core/store/autoEngine';
+import {orphanedModeFor} from '../core/store/renamePath';
+import {followRename} from './renameFollow';
 
 // Per-tick YIELD boundary: at most this many paid reads per tick, then the
 // tick returns and — if a backlog remains — re-pokes itself right away
@@ -111,6 +114,9 @@ const recordAutoSync = (name: string, pages: number): void => {
 // Vision included — clears, then drop them. PERSISTED (survives restarts);
 // ONE writer: this module.
 let manualWanted = new Set<string>();
+// True when the attended bypass came from an order RESTORED at boot rather
+// than a tap in this session (release audit 2026-08-12).
+let hydratedOrder = false;
 export const hydrateManualWanted = async (): Promise<void> => {
   try {
     manualWanted = new Set((await readSettings()).manualSyncWanted ?? []);
@@ -119,6 +125,7 @@ export const hydrateManualWanted = async (): Promise<void> => {
       // first tick runs attended, and the flag then lives only while the
       // backlog actually progresses (round 10 #2/#9).
       userBacklog = true;
+      hydratedOrder = true;
     }
   } catch {
     // memory set stays; the next persist writes it anyway
@@ -234,6 +241,15 @@ const pageFails = new Map<string, number>();
 // 2026-07-30) — would otherwise be re-billed by every tick's drain. Render
 // failures never reach this map (free, no API call — see onPageOutcome).
 const visionFails = new Map<string, number>();
+// Release audit 2026-08-12 (critical): the PDF branch of the tick had NO
+// failure accounting at all. A whole-file OCR that fails stores nothing and
+// stamps no docHash, so the document looked untouched and was re-uploaded —
+// and re-billed — at EVERY tick, forever. It was invisible to the session
+// cap too (that counts pages READ, and a failure reads none), so the 500-page
+// backstop could never engage. Same shape as pageFails, per DOCUMENT.
+const MAX_PDF_FAILS = 3;
+const pdfFails = new Map<string, number>();
+export const getPdfFails = (): ReadonlyMap<string, number> => pdfFails;
 // v0.88.3 perf: a failed render PROBE is not retried for a minute (except on
 // explicit/force pokes) — the v0.87.4 "ping" attempted 3 doomed renders on
 // EVERY 20 s tick, a steady tax on the e-ink UI thread.
@@ -290,14 +306,24 @@ export const resolveTrackedNotes = async (
   autoTargets: Record<string, AutoTarget>,
 ): Promise<Map<string, AutoTarget>> => {
   const candidates = new Set<string>();
+  // What the DISK actually holds, and which directories really answered —
+  // an empty listing is indistinguishable from a failed one (unmounted SD
+  // card), so only a non-empty answer proves anything about absence.
+  const seenOnDisk = new Set<string>();
+  const answeredDirs = new Set<string>();
   walkSizes.clear();
   const walk = async (dir: string): Promise<void> => {
-    for (const e of await listDirNative(dir)) {
+    const entries = await listDirNative(dir);
+    if (entries.length > 0) {
+      answeredDirs.add(dir);
+    }
+    for (const e of entries) {
       const p = `${dir}/${e.name}`;
       if (e.isDir) {
         await walk(p);
       } else if (/\.(note|pdf)$/i.test(e.name)) {
         candidates.add(p);
+        seenOnDisk.add(p);
         if (typeof e.size === 'number') {
           walkSizes.set(p, e.size);
         }
@@ -311,9 +337,49 @@ export const resolveTrackedNotes = async (
       candidates.add(key); // explicit .note or .pdf
     }
   }
+  // An explicit per-file decision whose file is PROVEN gone from a folder
+  // that really answered: the signature of a rename. Grouped by folder for
+  // the adoption below (release audit 2026-08-12).
+  const goneByDir = new Map<string, string[]>();
+  for (const key of Object.keys(autoTargets)) {
+    if (isAutoFolderKey(key) || seenOnDisk.has(key)) {
+      continue;
+    }
+    const dir = key.slice(0, key.lastIndexOf('/'));
+    if (!answeredDirs.has(dir)) {
+      continue; // no proof — never guess a file away
+    }
+    goneByDir.set(dir, [...(goneByDir.get(dir) ?? []), key]);
+  }
   const out = new Map<string, AutoTarget>();
   for (const notePath of candidates) {
-    const t = resolveAutoTarget(autoTargets, notePath);
+    let t = resolveAutoTarget(autoTargets, notePath);
+    // A file with no decision of its own, sitting where one just vanished:
+    // adopt the orphan's mode when it is STRICTER than what this path would
+    // inherit. Renaming an Off notebook used to hand it to the folder's
+    // Auto and get it read, billed and sent — the case the rename
+    // follow-through could not cover, because an Off document has no
+    // transcripts to relocate and nothing to infer a rename from.
+    if (autoTargets[notePath] === undefined) {
+      const dir = notePath.slice(0, notePath.lastIndexOf('/'));
+      const adopted = orphanedModeFor(
+        autoTargets,
+        notePath,
+        goneByDir.get(dir) ?? [],
+        t?.mode ?? DEFAULT_MODE,
+      );
+      if (adopted !== null) {
+        t = {mode: adopted.mode};
+        console.log(
+          '[SmartNoteAI.auto]',
+          `${notePath.split('/').pop()}: adopting "${adopted.mode}" from ` +
+            `${adopted.from.split('/').pop()} (renamed — mode kept)`,
+        );
+        // Persist it, so the decision is made once and everything else the
+        // old path carried (agents, standing order) follows too.
+        followRename(adopted.from, notePath).catch(() => {});
+      }
+    }
     // Off = excluded from the AI; never read, even on an explicit Sync.
     if (t !== null && t.mode !== 'off') {
       out.set(notePath, t);
@@ -444,6 +510,9 @@ export const autoTranscriptTick = async (
     // (hydrateManualWanted) and then lives ONLY while the backlog actually
     // progresses; a stuck order stops draining and the cap re-engages.
     attended = opts?.trigger === 'sync' || userBacklog;
+    const fromHydratedOrder =
+      attended && hydratedOrder && opts?.trigger !== 'sync';
+    hydratedOrder = false;
     userBacklog = false;
     if (attended) {
       capLogged = false;
@@ -722,13 +791,46 @@ export const autoTranscriptTick = async (
           // empty was re-billed uncapped, twice per tick, forever).
           continue;
         }
+        // Give up on a document that keeps failing, instead of paying for
+        // the same doomed whole-file OCR at every tick (release audit).
+        if ((pdfFails.get(notePath) ?? 0) >= MAX_PDF_FAILS) {
+          console.log(
+            '[SmartNoteAI.auto]',
+            `${name}: PDF failed ${MAX_PDF_FAILS}× this session → parked ` +
+              '(use Sync now to retry)',
+          );
+          continue;
+        }
         const r = await readPdf(
           deps,
           key,
           assemblePdfVisionPrompt(settings.promptBlocks),
           notePath,
           {skipVision: !canRenderPdf},
-        ).catch(() => ({ok: false, read: 0, failed: [] as number[]}));
+        ).catch(() => ({
+          ok: false,
+          read: 0,
+          failed: [] as number[],
+          reason: 'read threw',
+        }));
+        if (!r.ok && r.read === 0) {
+          // Nothing was stored and no docHash was stamped, so the next tick
+          // would try the identical call. Count it, and SAY why — the
+          // Library used to report "nothing new" while the bill grew.
+          const n = (pdfFails.get(notePath) ?? 0) + 1;
+          pdfFails.set(notePath, n);
+          firstFailReason =
+            firstFailReason ??
+            (r as {reason?: string}).reason ??
+            'PDF read failed';
+          console.warn(
+            '[SmartNoteAI.auto]',
+            `${name}: PDF read failed (${n}/${MAX_PDF_FAILS}) — ` +
+              `${(r as {reason?: string}).reason ?? 'no reason given'}`,
+          );
+        } else if (r.read > 0) {
+          pdfFails.delete(notePath); // progress clears the backoff
+        }
         pagesRead += r.read;
         paidThisTick = pagesRead;
         if (r.read > 0 && target.mode === 'auto') {
@@ -1194,6 +1296,25 @@ export const autoTranscriptTick = async (
     // ticks of an attended sync stay attended (uncapped); once the backlog
     // is done, background work goes back under the backstop.
     userBacklog = draining && attended;
+    // Release audit 2026-08-12: a standing order that can never complete is
+    // re-armed by hydrateManualWanted at EVERY plugin start, so every
+    // restart granted one uncapped tick — the runaway backstop weakened for
+    // as long as the order sits there, and it persists. Absence of a file is
+    // never proof (that rule stands), but "we ran attended for it and read
+    // nothing" is proof enough, measured here: drop the orders so no future
+    // session re-arms. Cancelling costs the user nothing — the documents
+    // still sync under their own mode, and Sync now is one tap away.
+    if (fromHydratedOrder && pagesRead === 0 && !degraded && !stopRequested()) {
+      const stuck = manualWanted.size;
+      if (stuck > 0) {
+        console.warn(
+          '[SmartNoteAI.auto]',
+          `${stuck} standing Sync-now order(s) made no progress — cancelled ` +
+            'so they stop bypassing the session spend cap',
+        );
+        cancelManualSync();
+      }
+    }
     completedNormally = true;
     if (draining) {
       pokeAuto('drain-continue', {force: true});

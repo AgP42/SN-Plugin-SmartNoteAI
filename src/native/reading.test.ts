@@ -1154,6 +1154,24 @@ describe('manual PDF Redo on a blank page (readPdfPageVision)', () => {
   });
 });
 
+describe('vision landed but added nothing (release audit 2026-08-12)', () => {
+  it('marks the page settled so the SAME tick\'s drain cannot re-bill it', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    route({
+      ocr: () => ocrRes('du texte ocr', GOOD),
+      chat: () => chatRes(''), // vision ran, had nothing to add
+    });
+    await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    const e = getPage(s, NOTE, 0)!;
+    expect(e.source).toBe('mistral-ocr');
+    expect(e.text).toContain('du texte ocr');
+    // The marker the drain reads: without it the page was collected again
+    // and a second Vision call was paid on the identical image.
+    expect(e.va).toBe(e.rev ?? '');
+  });
+});
+
 describe('unchanged pixels settle free (collecte ②: write-then-erase)', () => {
   // The test renders go through the JS pipeline (bytesToBase64 of the PNG
   // fixture) — the pixel tag is deterministic.

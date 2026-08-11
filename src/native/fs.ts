@@ -59,6 +59,7 @@ type NativeFsModule = {
     entries?: Array<{name: string; isDir: boolean; size: number}>;
   }>;
   listStorageVolumes?: () => Promise<{success?: boolean; roots?: string[]}>;
+  mkdirs?: (p: string) => Promise<{success?: boolean}>;
 };
 const nativeFs = (): NativeFsModule | null => {
   try {
@@ -177,10 +178,32 @@ export const listStorageVolumesNative = async (): Promise<string[]> => {
 // The one text-write entry point for callers: native UTF-8 first, JS
 // base64 encode + writeFileBase64 as fallback (tests, refused write).
 // Both paths are atomic (tmp + rename in Kotlin).
+// Both native writers REFUSE a missing parent (code PARENT_MISSING) — by
+// design, so a typo cannot scatter files. But nothing on the install path
+// ever created CONFIG_DIR: only "Export settings" and the library backup
+// did, so on a fresh install the diagnostic-log export and the User Guide's
+// staleness marker both failed silently, forever (release audit
+// 2026-08-12). One guard here covers every writer, present and future.
+let configDirReady = false;
+export const ensureConfigDir = async (): Promise<void> => {
+  if (configDirReady) {
+    return;
+  }
+  try {
+    const r = await nativeFs()?.mkdirs?.(CONFIG_DIR);
+    configDirReady = r?.success === true;
+  } catch {
+    // the write itself reports the real failure
+  }
+};
+
 export const writeTextAtomic = async (
   path: string,
   content: string,
 ): Promise<boolean> => {
+  if (path.startsWith(`${CONFIG_DIR}/`)) {
+    await ensureConfigDir();
+  }
   if (await writeTextFileUtf8(path, content)) {
     return true;
   }

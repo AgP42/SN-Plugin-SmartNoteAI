@@ -354,6 +354,13 @@ export const pagesNeedingRead = async (
   deps: CaptureDeps,
   notePath: string,
   pages: number[],
+  // Release audit 2026-08-12 (privacy): an Off-consent read promises to
+  // store nothing, and its wipe only removes the pages THAT read stored.
+  // The free relocation below writes durable entries the wipe cannot see,
+  // so an Off document ended up permanently transcribed by a single
+  // consented question. The PDF adoption already refuses under eph; this
+  // is its twin.
+  opts?: {eph?: boolean},
 ): Promise<number[]> => {
   const ids = await syncPageIds(deps, notePath);
   const revs = await readNotePageRevs(notePath).catch(
@@ -433,6 +440,7 @@ export const pagesNeedingRead = async (
     const pid = ids.get(p) ?? '';
     if (
       !docLocked &&
+      opts?.eph !== true && // an Off-consent read leaves nothing behind
       entry?.lock !== true &&
       looksLikePageId(pid) &&
       (entry === null || entry.hash !== pid)
@@ -607,7 +615,7 @@ export const readNotePages = async (
   await deps.saveCurrentNote().catch(() => {});
   const todo = opts?.force
     ? pages.slice()
-    : await pagesNeedingRead(deps, notePath, pages);
+    : await pagesNeedingRead(deps, notePath, pages, {eph: opts?.eph});
   if (opts?.shouldStop?.() || opts?.signal?.aborted) {
     return {ok: false, read: 0, failed: [], reason: 'Stopped.'};
   }
@@ -784,6 +792,23 @@ export const readNotePages = async (
       // Vision failed or came back empty — the paid OCR text beats nothing.
       await store(page, ocrText, 'mistral-ocr', low);
       ok = true;
+      if (v.ok && stored.includes(page)) {
+        // Vision LANDED and had nothing to add: record it, or the drain at
+        // the end of this very tick collects the page (source 'mistral-ocr',
+        // text non-empty, never settled) and pays for a second Vision call
+        // on the identical image (release audit 2026-08-12). Same marker
+        // finishVisionLive writes, keyed the same way.
+        await mutateStore(s => {
+          if (isPageLocked(s, notePath, page)) {
+            return false;
+          }
+          const e = getPage(s, notePath, page);
+          if (e !== null && e.source === 'mistral-ocr') {
+            e.va = e.rev ?? '';
+          }
+          markDocTouched(notePath);
+        });
+      }
     } else if (v.ok && ocrRan) {
       // Genuine blank page: OCR ran and saw nothing, and Vision returned
       // EMPTY or a bare "the page is blank" statement (collecte ① — that
@@ -1420,13 +1445,34 @@ export const getMarkPagesList = async (
   try {
     const raw = await deps.getMarkPages(pdfPath);
     const res = (raw as {result?: unknown})?.result ?? raw;
-    return Array.isArray(res)
-      ? res.filter((n): n is number => typeof n === 'number')
-      : null;
-  } catch {
+    if (Array.isArray(res)) {
+      markListFails.delete(pdfPath);
+      return res.filter((n): n is number => typeof n === 'number');
+    }
+    return null;
+  } catch (e) {
+    // Release audit 2026-08-12: on a firmware whose native side lacks this
+    // method the JS wrapper still exists, so the call REJECTS and every
+    // caller defers — PDF Vision then waited forever, in silence. It still
+    // defers (reading a page without its ink would store wrong text), but
+    // it now SAYS so instead of looking like nothing is happening.
+    const n = (markListFails.get(pdfPath) ?? 0) + 1;
+    markListFails.set(pdfPath, n);
+    if (n === MARK_LIST_WARN_AT) {
+      console.warn(
+        '[SmartNoteAI.read]',
+        `${pdfPath.split('/').pop()}: the annotation layer cannot be listed ` +
+          `(${n} attempts, ${String(e)}). PDF Vision stays deferred for this ` +
+          'document — this firmware may not support it.',
+      );
+    }
     return null;
   }
 };
+
+// Consecutive failures to list a PDF's annotated pages, per document.
+const markListFails = new Map<string, number>();
+const MARK_LIST_WARN_AT = 3;
 
 // Per-page annotation identity: FNV-1a over the rendered page image (the
 // same composited PNG the vision model would see). Local and free — no

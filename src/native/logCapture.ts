@@ -10,7 +10,7 @@
 // Names are kept IN CLEAR (user decision 2026-08-11): the log carries note
 // and folder names, never page content — no transcript, no question, no
 // answer, and no API key ever reaches it.
-import {AppState, Platform} from 'react-native';
+import {Platform} from 'react-native';
 import {pushLine, snapshotLines, bufferStats} from '../core/logBuffer';
 import {APP_VERSION, APP_VERSION_CODE} from '../core/version';
 import {CONFIG_DIR, writeTextAtomic} from './fs';
@@ -18,7 +18,6 @@ import {CONFIG_DIR, writeTextAtomic} from './fs';
 export const LOG_FILE_PATH = `${CONFIG_DIR}/smartnoteai-log.txt`;
 
 let installed = false;
-let dirty = false;
 
 // Never throw out of a logger, and never recurse into it.
 const safeText = (v: unknown): string => {
@@ -44,10 +43,21 @@ const stamp = (at: number): string => {
   )}`;
 };
 
+// sn-plugin-lib logs its full parameter schema on EVERY SDK call
+// (VerifyUtils: console.log('verifyParams', schema, params, options)).
+// Those calls are per-page in the read loop, and each serialises to ~550
+// characters — a single sync rotated the whole ring out and the evidence
+// with it (release audit 2026-08-12). Dropped from the FILE only; logcat
+// still shows them, which is where they are actually useful.
+const isSdkNoise = (args: unknown[]): boolean =>
+  args.length > 1 && args[0] === 'verifyParams';
+
 export const record = (level: string, args: unknown[], at: number): void => {
   try {
+    if (isSdkNoise(args)) {
+      return;
+    }
     pushLine(`${stamp(at)} ${level} ${args.map(safeText).join(' ')}`);
-    dirty = true;
   } catch {
     // A failing logger must never take the app down with it.
   }
@@ -116,9 +126,6 @@ export const writeLogFile = async (
     '',
   ].join('\n');
   const ok = await writeTextAtomic(LOG_FILE_PATH, body).catch(() => false);
-  if (ok) {
-    dirty = false;
-  }
   return ok ? LOG_FILE_PATH : null;
 };
 
@@ -154,12 +161,13 @@ export const installLogCapture = (): void => {
     writeLogFile().catch(() => undefined);
     prev?.(e, fatal);
   });
-  // RN freezes JS timers the moment we go background, so the tail would be
-  // lost on a kill: flush when the user leaves, and only if something new
-  // was actually logged.
-  AppState.addEventListener('change', st => {
-    if (st !== 'active' && dirty) {
-      writeLogFile().catch(() => undefined);
-    }
-  });
+  // NOT on backgrounding any more (release audit 2026-08-12): MyStyle is
+  // the CLOUD-SYNCED, USB-visible volume — the whole storage design keeps
+  // the key, the settings and the store OUT of it precisely for that
+  // reason, and MyStyle is "export/import territory only, two explicit
+  // buttons, never a permanent write channel". Writing the log there on
+  // every background sent the user's notebook NAMES to their cloud with no
+  // action and no mention. The file is now written on exactly two
+  // occasions: the user taps Export, or the plugin crashed.
+
 };

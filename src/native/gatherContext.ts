@@ -59,7 +59,11 @@ export const parseScope = (
 
 export type GatherOutcome =
   | {kind: 'ok'; userText: string; pages: number[]; offline: string}
-  | {kind: 'estimate'; count: number; euros: string} // >100 pages: ask first
+  // >100 pages: ask first. For a PDF nobody has read yet the page count is
+  // NOT knowable (no SDK call returns it, getNoteTotalPageNum answers 1),
+  // so the estimate carries the honest UPPER bound too and the dialog shows
+  // a range instead of a fabricated number (release audit 2026-08-12).
+  | {kind: 'estimate'; count: number; euros: string; upTo?: number; eurosUpTo?: string}
   | {kind: 'stopped'};
 
 export const gatherContext = async (
@@ -122,7 +126,9 @@ export const gatherContext = async (
       // Single engine: OCR 4 + vision, always (v0.38).
       // Big-read confirmation (decision U2: dialog above 100 pages).
       if (!opts.skipEstimate) {
-        const needed = await pagesNeedingRead(deps, notePath, pages);
+        const needed = await pagesNeedingRead(deps, notePath, pages, {
+          eph: opts.isOff,
+        });
         if (needed.length > 100) {
           return {
             kind: 'estimate',
@@ -213,16 +219,25 @@ export const gatherContext = async (
           const needed = covered
             ? pendingVisionPages(st0, notePath).length
             : total;
-          if (needed > 100) {
+          // The 300 kB/page divisor above describes a 300 dpi SCAN. A born-
+          // digital text PDF runs 10-50 kB/page, so for those it under-counts
+          // 6-30x — and the gate never fired: a 520-page textbook was OCR'd
+          // and Visioned whole to answer one question (release audit, money
+          // critical). When no trustworthy count exists (never read, and the
+          // host reports 1 page for a PDF), decide on the UPPER bound and
+          // show the range: erring toward asking costs a tap, erring the
+          // other way costs euros.
+          const trusted = covered || capture.totalPages > 1 || storedPages > 0;
+          const upper = trusted ? needed : Math.floor((bytes ?? 0) / 20_000);
+          if (Math.max(needed, upper) > 100) {
+            const cents = covered ? READ_COST_CENTS : FULL_PAGE_READ_CENTS;
             return {
               kind: 'estimate',
               count: needed,
-              euros: eurosTotal(
-                needed,
-                covered
-                  ? READ_COST_CENTS // vision-only resume
-                  : FULL_PAGE_READ_CENTS,
-              ),
+              euros: eurosTotal(needed, cents),
+              ...(trusted || upper <= needed
+                ? {}
+                : {upTo: upper, eurosUpTo: eurosTotal(upper, cents)}),
             };
           }
         }

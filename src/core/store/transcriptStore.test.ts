@@ -562,6 +562,16 @@ describe('soleDonorDoc / retireRenamedDoc (rename follow-through)', () => {
     expect(soleDonorDoc(s, NEW, [P1, P2])).toBeNull();
   });
 
+  it('a BLANK page in the donor does not defeat the inference', () => {
+    const s = emptyStore();
+    withPages(s, OLD, [P1, P2]);
+    // A page read and found empty: real PAGEID, no text — it never donates,
+    // so it is never relocated either (release audit 2026-08-12).
+    upsertPage(s, OLD, 2, {text: '', source: 'mistral-ocr', at: 1, hash: P3}, 1);
+    withPages(s, NEW, [P1, P2]);
+    expect(soleDonorDoc(s, NEW, [P1, P2])).toBe(OLD);
+  });
+
   it('refuses when two docs could be the donor', () => {
     const s = emptyStore();
     withPages(s, OLD, [P1]);

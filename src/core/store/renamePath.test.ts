@@ -5,6 +5,7 @@ import {
   migrateAutoTargets,
   migrateAgentPaths,
   migrateWantedPaths,
+  orphanedModeFor,
 } from './renamePath';
 import type {Agent} from '../agents/agents';
 
@@ -71,6 +72,54 @@ describe('migrateAgentPaths', () => {
     expect(migrateAgentPaths([other], OLD, NEW)).toBeNull();
     const out = migrateAgentPaths([other, agent({docs: [OLD]})], OLD, NEW)!;
     expect(out[0]).toBe(other); // same object: nothing rewritten
+  });
+});
+
+describe('orphanedModeFor (an Off that survives a rename)', () => {
+  const GONE = '/Note/Journal/Therapy.note';
+  const NEW = '/Note/Journal/Therapy 2026.note';
+
+  it('adopts the orphaned Off instead of inheriting the folder Auto', () => {
+    const out = orphanedModeFor(
+      {'/Note/Journal': {mode: 'auto'}, [GONE]: {mode: 'off'}},
+      NEW,
+      [GONE],
+      'auto',
+    );
+    expect(out).toEqual({from: GONE, mode: 'off'});
+  });
+
+  it('NEVER loosens: an orphaned Auto is not adopted over an inherited Off', () => {
+    expect(
+      orphanedModeFor({[GONE]: {mode: 'auto'}}, NEW, [GONE], 'off'),
+    ).toBeNull();
+  });
+
+  it('refuses when two explicit entries in the folder are gone', () => {
+    const other = '/Note/Journal/Autre.note';
+    expect(
+      orphanedModeFor(
+        {[GONE]: {mode: 'off'}, [other]: {mode: 'off'}},
+        NEW,
+        [GONE, other],
+        'auto',
+      ),
+    ).toBeNull();
+  });
+
+  it('a path with its own decision is never overridden', () => {
+    expect(
+      orphanedModeFor(
+        {[GONE]: {mode: 'off'}, [NEW]: {mode: 'auto'}},
+        NEW,
+        [GONE],
+        'auto',
+      ),
+    ).toBeNull();
+  });
+
+  it('a gone path with no explicit entry is not a candidate', () => {
+    expect(orphanedModeFor({}, NEW, [GONE], 'auto')).toBeNull();
   });
 });
 

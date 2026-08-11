@@ -84,6 +84,7 @@ import {
   pageTextsFromStore,
   readNotePages,
   readPdf,
+  readPdfPageVision,
   syncNotePages,
   upsertTranscript,
 } from './src/native/reading';
@@ -449,6 +450,8 @@ export default function ChatPanel({
   const [estimateAsk, setEstimateAsk] = useState<{
     count: number;
     euros: string;
+    upTo?: number;
+    eurosUpTo?: string;
   } | null>(null);
   const pendingRef = useRef<{
     text: string;
@@ -974,7 +977,12 @@ export default function ChatPanel({
           setProgress(null);
           if (g.kind === 'estimate') {
             pendingRef.current = {text};
-            setEstimateAsk({count: g.count, euros: g.euros});
+            setEstimateAsk({
+              count: g.count,
+              euros: g.euros,
+              upTo: g.upTo,
+              eurosUpTo: g.eurosUpTo,
+            });
             return;
           }
           if (g.kind === 'stopped') {
@@ -1487,12 +1495,20 @@ export default function ChatPanel({
           {force: true, rotateDeg, signal: ctl.signal},
         );
       } else if (/\.pdf$/i.test(capture.notePath)) {
-        r = await readPdf(
+        // ONE page, never the document (release audit 2026-08-12, critical):
+        // this used to call readPdf(force) — which skips the covered check
+        // and re-OCRs the WHOLE file, then re-Visions every page of it. On a
+        // 400-page PDF that is ~1.60 € per tap, with no dialog, and it
+        // overwrote every stored transcript including unlocked hand
+        // corrections. The Library's twin button was fixed for exactly this
+        // reason (see its comment); this copy had been left behind.
+        r = await readPdfPageVision(
           captureBridge(),
           keyState.config.apiKey,
           await freshPdfVisionSystem(),
           capture.notePath,
-          {force: true, signal: ctl.signal},
+          capture.page,
+          {signal: ctl.signal},
         );
       }
       // Surface a refusal/failure (e.g. the Off gate) instead of silently
@@ -2383,7 +2399,12 @@ export default function ChatPanel({
         {turns.length === 0 ? (
           <View style={styles.emptyState}>
             <Text style={[styles.hint, msgText]}>
-              Ask about your page, or tap a quick action below.
+              {/* Release audit 2026-08-12: with no key the field is not even
+                  editable and every action is greyed, and NOTHING said why —
+                  a first-time user meets a plugin that looks broken. */}
+              {keyState.kind !== 'ok'
+                ? 'No Mistral API key yet. Open the menu → ⚙ Plugin configuration → 1 · API key, paste your key and save it — then come back here.'
+                : 'Ask about your page, or tap a quick action below.'}
             </Text>
           </View>
         ) : (

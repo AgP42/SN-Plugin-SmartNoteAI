@@ -45,6 +45,14 @@ describe('record', () => {
     expect(snapshotLines()[0]).toContain('logCapture.test');
   });
 
+  it("drops the SDK's per-call verifyParams dump — it rotated the evidence out", () => {
+    record('LOG', ['verifyParams', {a: 1}, {b: 2}, {c: 3}], AT);
+    expect(snapshotLines()).toHaveLength(0);
+    // A real line that merely mentions it is kept.
+    record('LOG', ['[SmartNoteAI.read] verifyParams looked wrong'], AT);
+    expect(snapshotLines()).toHaveLength(1);
+  });
+
   it('survives a value that cannot be serialized', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
@@ -95,14 +103,12 @@ describe('writeLogFile', () => {
 describe('installLogCapture', () => {
   // Installation is once-per-process by design, so grab what it registered
   // here — beforeEach's clearAllMocks would erase the record of the call.
-  let onChange: (s: string) => void;
   // Stand in for logcat BEFORE installing, so the wrapper keeps it as the
   // "original" it must still forward to.
   const printed = jest.fn();
   beforeAll(() => {
     (console as unknown as {log: unknown}).log = printed;
     installLogCapture();
-    onChange = mockAddEventListener.mock.calls.find(c => c[0] === 'change')![1];
   });
 
   it('captures console output AND still prints it (adb keeps working)', () => {
@@ -111,13 +117,12 @@ describe('installLogCapture', () => {
     expect(printed).toHaveBeenCalledWith('[SmartNoteAI.auto]', 'tick');
   });
 
-  it('flushes on background only, and only when something new was logged', () => {
-    clearBuffer();
-    onChange('active');
-    expect(mockWriteTextAtomic).not.toHaveBeenCalled();
+  it('NEVER writes on its own: MyStyle is cloud-synced (release audit)', () => {
     record('LOG', ['something happened'], AT);
-    onChange('background');
-    expect(mockWriteTextAtomic).toHaveBeenCalledTimes(1);
+    // No AppState listener at all any more — the file is written only when
+    // the user taps Export, or when the plugin crashes.
+    expect(mockAddEventListener).not.toHaveBeenCalled();
+    expect(mockWriteTextAtomic).not.toHaveBeenCalled();
   });
 
   it('installs once — a second call registers nothing and re-wraps nothing', () => {
