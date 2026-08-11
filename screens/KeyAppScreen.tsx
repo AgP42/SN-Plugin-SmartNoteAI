@@ -17,7 +17,6 @@ import type {ModelConfig} from '../src/core/model/types';
 import {
   exportSettings,
   importSettings,
-  restoreDefaultAgents,
   EXPORT_SETTINGS_PATH,
 } from '../src/native/settings';
 import {setApiKey, deleteLegacyKeyFile} from '../src/native/secureKey';
@@ -203,15 +202,6 @@ function KeyAppScreen({
     }
   }, [importConfirm, load, setMsg, flushSettings]);
 
-  const onRestoreAgents = useCallback(async () => {
-    const n = await restoreDefaultAgents();
-    setMsg(
-      n > 0
-        ? `Added ${n} starter agent(s): open "3 · CHAT & AGENTS…" to try them.`
-        : 'All starter agents are already in your config.',
-    );
-  }, [setMsg]);
-
   // K13 (device feedback): the chosen text size applies to the config
   // pages themselves, not just the panel. Shared styles now follow the
   // scale too (every button/label, not just the mf/nf/sf inline overrides).
@@ -333,22 +323,10 @@ function KeyAppScreen({
             as a backup, to edit by hand, or to move to another device.
             Import replaces ALL settings with that file.
           </Text>
+          {/* Export and Import belong together (user 2026-08-11): the log
+              section used to sit between them. */}
           <TouchableOpacity onPress={onExportSettings} style={styles.smallBtn}>
             <Text style={styles.smallBtnText}>Export settings</Text>
-          </TouchableOpacity>
-          <Text style={[styles.section, sf]}>Report a problem</Text>
-          <Text style={[styles.manual, mf]}>
-            The plugin keeps a short log of what it does. If something goes
-            wrong, export it right after the problem and attach the file to
-            your report — it lands in{' '}
-            {LOG_FILE_PATH.replace('/storage/emulated/0/', '')}, readable
-            over USB or from the Partner app. It records the plugin's own
-            activity and the names of the files it touched; it never
-            contains the text of your pages, your questions, the answers,
-            or your API key.
-          </Text>
-          <TouchableOpacity onPress={onExportLog} style={styles.smallBtn}>
-            <Text style={styles.smallBtnText}>Export diagnostic log</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={onImportSettings}
@@ -366,15 +344,29 @@ function KeyAppScreen({
                 : 'Import settings (replace all)'}
             </Text>
           </TouchableOpacity>
-          {/* v0.80.0 (audit M8): renamed — a fresh install ships with no
-              agents, so there is nothing to "restore"; this ADDS the
-              starter presets (same as "+ Add preset" in door 3). */}
-          <TouchableOpacity onPress={onRestoreAgents} style={styles.smallBtn}>
-            <Text style={styles.smallBtnText}>Add starter agents</Text>
-          </TouchableOpacity>
+          {/* "Add starter agents" removed here (user 2026-08-11) — it is
+              the same action as "+ Add preset" in door 3, where agents are
+              actually managed. */}
 
           {/* v0.79.12: the transcript-library backup moved to the LIBRARY
               page (its 'saved' feedback already lives there). */}
+
+          <Text style={[styles.section, sf]}>Export Log</Text>
+          <Text style={[styles.manual, mf]}>
+            The plugin keeps a short log of what it does. If something goes
+            wrong, export it right after the problem and attach the file to
+            your report — it lands in{' '}
+            {LOG_FILE_PATH.replace('/storage/emulated/0/', '')}, readable
+            over USB or from the Partner app. It records the plugin's own
+            activity; it never contains the text of your pages, your
+            questions, the answers, or your API key. The NAMES of the notes
+            and folders it touched do appear, in clear: it is a plain text
+            file, so you can open it and edit those names out before sending
+            it if you would rather not share them.
+          </Text>
+          <TouchableOpacity onPress={onExportLog} style={styles.smallBtn}>
+            <Text style={styles.smallBtnText}>Export diagnostic log</Text>
+          </TouchableOpacity>
 
           <Text style={[styles.section, sf]}>Appearance</Text>
           <Text style={[styles.label, lf]}>Text size</Text>

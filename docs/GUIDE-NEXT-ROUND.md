@@ -1,13 +1,58 @@
 # Manuel utilisateur — retours pour la prochaine passe Claude Design
 
-> État au **2026-08-10**, contre le code **v1.0.6**.
+> État au **2026-08-11**, contre le code **v1.0.7**.
 > Le PDF courant (« Manuel utilisateur v1.0.4.pdf », 17 p., régénéré le
 > 2026-08-10 à 11:34) est **juste sur le fond** : tous ses chiffres et tous
 > ses comportements décrits ont été re-vérifiés contre le code.
 > Ce fichier accumule ce qui reste à corriger pour la **prochaine version
 > complète** du manuel — rien ici n'est bloquant.
 
-## ⚠️ Le seul vrai manque : le RENOMMAGE n'est documenté nulle part
+## 🆕 Nouvelle section à créer : signaler un problème (v1.0.7)
+
+C'est la nouveauté la plus importante à documenter, parce qu'elle concerne
+les utilisateurs publics : jusqu'ici, quelqu'un qui rencontrait un bug ne
+pouvait rien transmettre (lire un log demande un ordinateur et `adb`). Le
+plugin tient désormais son propre journal et sait l'exporter en fichier.
+
+**Où la mettre** : une sous-section courte en fin de **§3.2 (porte 1)**, où
+le bouton se trouve — et une ligne de renvoi dans **§6.1**, à côté des
+conseils, du type « Un problème ? Voir §3.2, Export Log ».
+
+Texte proposé (à reformuler par Claude Design, le fond doit rester) :
+
+> **Export Log.** The plugin keeps a short log of what it does. If something
+> goes wrong, export it right after the problem: **Export diagnostic log**
+> writes `MyStyle/Plugins/SmartNoteAI/smartnoteai-log.txt`, which you can
+> copy over USB or from the Partner app and attach to a bug report at
+> github.com/AgP42/SN-Plugin-SmartNoteAI/issues. The file already carries the
+> plugin version, your device model, the Android build and a summary of your
+> library, so there is nothing else to look up.
+>
+> The log records the plugin's own activity. It never contains the text of
+> your pages, your questions, the AI's answers, or your API key. The **names**
+> of the notes and folders it touched do appear, in clear — it is a plain text
+> file, so you can open it and edit those names out before sending it if you
+> would rather not share them.
+>
+> A crash writes the log by itself, with the error, before the plugin goes
+> down — so exporting after a restart still shows what happened.
+
+⚠️ Écrire noir sur blanc que **les noms de fichiers sont en clair** et que
+l'utilisateur peut les retirer à la main : c'est une décision assumée
+(2026-08-11), pas un oubli, et le manuel doit être honnête là-dessus.
+
+## Réorganisation de la porte 1 (v1.0.7) — si des captures sont refaites
+
+L'ordre des blocs a changé ; les figures de §3.2 peuvent être à reprendre :
+
+- **Settings backup** regroupe maintenant *Export settings* et *Import
+  settings* côte à côte (ils étaient séparés par un autre bloc).
+- Le bouton **« Add starter agents »** a été **retiré** de la porte 1 : la
+  même action existe en porte 3 (« + Add preset »), là où l'on gère les
+  agents. Si le manuel le mentionne en §3.2, le déplacer vers §3.4.
+- Nouveau bloc **Export Log** en fin de porte 1 (voir ci-dessus).
+
+## ⚠️ Le RENOMMAGE n'est documenté nulle part
 
 C'est le point important de cette passe. Le §2 décrit l'empreinte de page
 ainsi :
@@ -48,7 +93,7 @@ re-signaler. Il ne reste que deux détails cosmétiques :
 | « (chosen on measured results) **;** while » | « (chosen on measured results)**,** while » — l'espace avant le point-virgule est une habitude typographique française |
 | « **the** Mistral Small, Medium and Large are » | « Mistral Small, Medium and Large are » — l'article devant les noms de modèles est un calque du français |
 
-## Vérifié conforme au code v1.0.6 (ne pas retoucher)
+## Vérifié conforme au code v1.0.7 (ne pas retoucher)
 
 - Cap Auto non surveillé « 500 pages / session » → `MAX_PAGES_PER_SESSION_BLOCK = 500`.
 - « Up to 8 custom agents plus CHAT (9 entries) » → `MAX_AGENTS = 8`.
@@ -64,6 +109,9 @@ re-signaler. Il ne reste que deux détails cosmétiques :
   fichier renommé.
 - Couverture « PLUGIN V1.00. X » : volontaire (décision user) — pas de
   réédition du manuel à chaque patch.
+- Le plugin connaît désormais sa propre version : l'en-tête du journal
+  affiche « v1.0.7 (build 316) », donc plus besoin de la demander dans un
+  rapport de bug.
 
 ## Point encore non vérifié (à faire par la user, console Mistral)
 
