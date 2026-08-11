@@ -44,7 +44,7 @@ export const GUIDE_PDF_PATH = `${GUIDE_DIR}/SmartNote AI - User Guide.pdf`;
 // installed guide whose stamp differs is REPLACED — file and transcript
 // (yes, including a user-edited copy: it is our document, and stale
 // instructions are worse than a lost annotation).
-const GUIDE_REV = 17;
+const GUIDE_REV = 18;
 const GUIDE_STAMP = `guide-rev:${GUIDE_REV}`;
 
 type GuidePage = {title: string; body: string};
