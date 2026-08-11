@@ -1513,7 +1513,11 @@ export default function ChatPanel({
       }
       // Surface a refusal/failure (e.g. the Off gate) instead of silently
       // keeping the old entry — the banner is the panel's message line.
-      setOffline(!r.ok && r.reason ? r.reason : '');
+      // A SUCCESS can carry a reason too ("this page is blank", "vision
+      // found nothing to add"): the single-page PDF path returns one, and
+      // dropping it made a paid tap look like a no-op (verification pass
+      // 2026-08-12). The Library twin already shows it.
+      setOffline(r.reason ?? '');
       // A fresh read is a better context than whatever was sent before.
       setContextSent(false);
     } finally {
@@ -2819,7 +2823,12 @@ export default function ChatPanel({
                   </Text>
                 </TouchableOpacity>
                 )}
-                {ctxMode !== 'page' ? null : (
+                {/* Rotation is a NOTE-page operation: the single-page PDF
+                    re-read has no rotate argument, so on a PDF these two
+                    buttons silently did a plain redo (verification pass
+                    2026-08-12). Hidden rather than lying. */}
+                {ctxMode !== 'page' ||
+                (cap !== null && !isNotePath(cap.notePath)) ? null : (
                 <>
                 <TouchableOpacity
                   onPress={() => onReread(90)}

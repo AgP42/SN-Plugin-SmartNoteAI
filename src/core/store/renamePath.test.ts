@@ -85,13 +85,14 @@ describe('orphanedModeFor (an Off that survives a rename)', () => {
       NEW,
       [GONE],
       'auto',
+      [NEW],
     );
     expect(out).toEqual({from: GONE, mode: 'off'});
   });
 
   it('NEVER loosens: an orphaned Auto is not adopted over an inherited Off', () => {
     expect(
-      orphanedModeFor({[GONE]: {mode: 'auto'}}, NEW, [GONE], 'off'),
+      orphanedModeFor({[GONE]: {mode: 'auto'}}, NEW, [GONE], 'off', [NEW]),
     ).toBeNull();
   });
 
@@ -103,6 +104,7 @@ describe('orphanedModeFor (an Off that survives a rename)', () => {
         NEW,
         [GONE, other],
         'auto',
+        [NEW],
       ),
     ).toBeNull();
   });
@@ -114,12 +116,28 @@ describe('orphanedModeFor (an Off that survives a rename)', () => {
         NEW,
         [GONE],
         'auto',
+        [NEW],
+      ),
+    ).toBeNull();
+  });
+
+  it('refuses when SEVERAL untracked files could be the renamed one', () => {
+    // Verification pass 2026-08-12: the first version fanned out to every
+    // sibling, so a bystander could inherit the Off and stop syncing.
+    const sibling = '/Note/Journal/Notes.note';
+    expect(
+      orphanedModeFor(
+        {'/Note/Journal': {mode: 'auto'}, [GONE]: {mode: 'off'}},
+        NEW,
+        [GONE],
+        'auto',
+        [NEW, sibling],
       ),
     ).toBeNull();
   });
 
   it('a gone path with no explicit entry is not a candidate', () => {
-    expect(orphanedModeFor({}, NEW, [GONE], 'auto')).toBeNull();
+    expect(orphanedModeFor({}, NEW, [GONE], 'auto', [NEW])).toBeNull();
   });
 });
 

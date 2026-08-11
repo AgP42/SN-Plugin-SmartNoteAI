@@ -100,12 +100,18 @@ export const orphanedModeFor = (
   // provenGone).
   goneInFolder: readonly string[],
   inherited: AutoMode,
+  // Paths in the SAME folder that exist but carry no explicit decision.
+  // The inference needs exactly one of those as well: with two, we cannot
+  // tell WHICH file the vanished one became, and protecting both would
+  // quietly stop syncing a document the user never touched (verification
+  // pass 2026-08-12 — the first version fanned out to every sibling).
+  untrackedInFolder: readonly string[],
 ): {from: string; mode: AutoMode} | null => {
   if (targets[path] !== undefined) {
     return null; // the path speaks for itself
   }
   const cands = goneInFolder.filter(p => p !== path && targets[p] !== undefined);
-  if (cands.length !== 1) {
+  if (cands.length !== 1 || untrackedInFolder.length !== 1) {
     return null; // nothing to adopt, or an ambiguity we refuse to guess
   }
   const mode = targets[cands[0]].mode;

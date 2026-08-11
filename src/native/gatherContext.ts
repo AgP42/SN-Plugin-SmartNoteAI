@@ -227,7 +227,11 @@ export const gatherContext = async (
           // host reports 1 page for a PDF), decide on the UPPER bound and
           // show the range: erring toward asking costs a tap, erring the
           // other way costs euros.
-          const trusted = covered || capture.totalPages > 1 || storedPages > 0;
+          // NOT storedPages: a single page redone by hand makes it 1 and
+          // used to disable this gate entirely — the 520-page textbook was
+          // read whole again (verification pass 2026-08-12). Only a real
+          // page COUNT can be trusted here.
+          const trusted = covered || capture.totalPages > 1;
           const upper = trusted ? needed : Math.floor((bytes ?? 0) / 20_000);
           if (Math.max(needed, upper) > 100) {
             const cents = covered ? READ_COST_CENTS : FULL_PAGE_READ_CENTS;

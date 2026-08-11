@@ -59,7 +59,6 @@ import {
   type AutoTarget,
 } from '../core/store/autoEngine';
 import {orphanedModeFor} from '../core/store/renamePath';
-import {followRename} from './renameFollow';
 
 // Per-tick YIELD boundary: at most this many paid reads per tick, then the
 // tick returns and — if a backlog remains — re-pokes itself right away
@@ -351,6 +350,17 @@ export const resolveTrackedNotes = async (
     }
     goneByDir.set(dir, [...(goneByDir.get(dir) ?? []), key]);
   }
+  // Files that EXIST with no decision of their own, per folder: the
+  // inference below needs exactly one of those too, or it cannot tell
+  // which file the vanished one became.
+  const untrackedByDir = new Map<string, string[]>();
+  for (const p of candidates) {
+    if (autoTargets[p] !== undefined) {
+      continue;
+    }
+    const dir = p.slice(0, p.lastIndexOf('/'));
+    untrackedByDir.set(dir, [...(untrackedByDir.get(dir) ?? []), p]);
+  }
   const out = new Map<string, AutoTarget>();
   for (const notePath of candidates) {
     let t = resolveAutoTarget(autoTargets, notePath);
@@ -367,17 +377,26 @@ export const resolveTrackedNotes = async (
         notePath,
         goneByDir.get(dir) ?? [],
         t?.mode ?? DEFAULT_MODE,
+        untrackedByDir.get(dir) ?? [],
       );
       if (adopted !== null) {
+        // IN MEMORY ONLY, for this tick's decision. The first version
+        // called followRename here — which RETIRES the old document from
+        // the store and moves its lock and agent references — on nothing
+        // more than "an explicit entry's file is gone and an untracked
+        // file sits in the same folder". That is a guess, and a guess must
+        // never delete a paid transcript (verification pass 2026-08-12).
+        // Deciding it fresh every tick costs nothing and writes nothing:
+        // the protection holds for as long as the evidence does, and the
+        // real rename follow-through still runs from the READ path, where
+        // relocated transcripts prove the pairing.
         t = {mode: adopted.mode};
         console.log(
           '[SmartNoteAI.auto]',
-          `${notePath.split('/').pop()}: adopting "${adopted.mode}" from ` +
-            `${adopted.from.split('/').pop()} (renamed — mode kept)`,
+          `${notePath.split('/').pop()}: reading as "${adopted.mode}" — the ` +
+            `only untracked file where ${adopted.from.split('/').pop()} ` +
+            'vanished (stricter of the two, nothing written)',
         );
-        // Persist it, so the decision is made once and everything else the
-        // old path carried (agents, standing order) follows too.
-        followRename(adopted.from, notePath).catch(() => {});
       }
     }
     // Off = excluded from the AI; never read, even on an explicit Sync.
@@ -623,8 +642,16 @@ export const autoTranscriptTick = async (
     // UNATTENDED work only, the session backstop still has room (the free
     // structural pass runs regardless — round 5 #8/#10).
     const capReached = (): boolean => {
-      if (attended) {
-        return false; // the user's own work is never capped
+      // The user's own work is never capped — but "the user" means a tap in
+      // THIS session. A standing order restored at boot re-armed `attended`
+      // at every plugin start, so each restart granted one uncapped tick
+      // (release audit). The first fix CANCELLED such orders, which
+      // destroyed legitimate ones whenever a tick innocently read nothing —
+      // no render host, offline, everything already covered (verification
+      // pass 2026-08-12). The order is left alone; it simply no longer
+      // switches the runaway backstop off.
+      if (attended && !fromHydratedOrder) {
+        return false;
       }
       const hit = sessionPaidPages + pagesRead >= MAX_PAGES_PER_SESSION_BLOCK;
       if (hit && !capLogged) {
@@ -791,6 +818,13 @@ export const autoTranscriptTick = async (
           // empty was re-billed uncapped, twice per tick, forever).
           continue;
         }
+        // An explicit user sync REALLY retries: the parking message said
+        // "use Sync now to retry" and it was a lie — nothing cleared the
+        // counter (verification pass 2026-08-12). A tap is proof the user
+        // wants to spend again.
+        if (opts?.trigger === 'sync' || opts?.force === true) {
+          pdfFails.delete(notePath);
+        }
         // Give up on a document that keeps failing, instead of paying for
         // the same doomed whole-file OCR at every tick (release audit).
         if ((pdfFails.get(notePath) ?? 0) >= MAX_PDF_FAILS) {
@@ -813,7 +847,12 @@ export const autoTranscriptTick = async (
           failed: [] as number[],
           reason: 'read threw',
         }));
-        if (!r.ok && r.read === 0) {
+        // ok:true with read 0 counts too: a whole-file OCR that parses to
+        // ZERO pages is a PAID call that stores nothing and stamps no
+        // docHash, so the next tick repeats it — one of the two triggers
+        // the original finding described, and the first counter missed it
+        // (verification pass 2026-08-12).
+        if (r.read === 0) {
           // Nothing was stored and no docHash was stamped, so the next tick
           // would try the identical call. Count it, and SAY why — the
           // Library used to report "nothing new" while the bill grew.
@@ -1296,25 +1335,6 @@ export const autoTranscriptTick = async (
     // ticks of an attended sync stay attended (uncapped); once the backlog
     // is done, background work goes back under the backstop.
     userBacklog = draining && attended;
-    // Release audit 2026-08-12: a standing order that can never complete is
-    // re-armed by hydrateManualWanted at EVERY plugin start, so every
-    // restart granted one uncapped tick — the runaway backstop weakened for
-    // as long as the order sits there, and it persists. Absence of a file is
-    // never proof (that rule stands), but "we ran attended for it and read
-    // nothing" is proof enough, measured here: drop the orders so no future
-    // session re-arms. Cancelling costs the user nothing — the documents
-    // still sync under their own mode, and Sync now is one tap away.
-    if (fromHydratedOrder && pagesRead === 0 && !degraded && !stopRequested()) {
-      const stuck = manualWanted.size;
-      if (stuck > 0) {
-        console.warn(
-          '[SmartNoteAI.auto]',
-          `${stuck} standing Sync-now order(s) made no progress — cancelled ` +
-            'so they stop bypassing the session spend cap',
-        );
-        cancelManualSync();
-      }
-    }
     completedNormally = true;
     if (draining) {
       pokeAuto('drain-continue', {force: true});
