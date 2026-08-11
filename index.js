@@ -23,6 +23,16 @@ import {startAutoScheduler, pokeAuto} from './src/native/autoTranscript';
 import {readSettings} from './src/native/settings';
 import {sweepTempFiles} from './src/native/tmpJanitor';
 import {installHybridSleep} from './src/native/nativeSleep';
+import {installLogCapture} from './src/native/logCapture';
+
+// FIRST thing that runs (2026-08-11): once the plugin is public, a user who
+// hits a bug has no adb — the plugin has to keep its own log and be able to
+// hand it over as a file (config door 1 → "Export diagnostic log"). Capture
+// is a bounded in-memory ring, so it costs nothing and is always on: a
+// toggle would be armed only AFTER the bug, when the evidence is gone.
+// Installed here so the very first lines of a session are captured, and so
+// a crash during init still leaves a trace.
+installLogCapture();
 
 // Every core wait (retry sleep, 429 pacing, request watchdog) becomes
 // freeze-proof: resolved by the native heartbeat when RN froze JS timers

@@ -21,6 +21,9 @@ import {
   EXPORT_SETTINGS_PATH,
 } from '../src/native/settings';
 import {setApiKey, deleteLegacyKeyFile} from '../src/native/secureKey';
+import {writeLogFile, LOG_FILE_PATH} from '../src/native/logCapture';
+import {loadStore} from '../src/native/transcriptStoreIo';
+import {docsSummary} from '../src/core/store/transcriptStore';
 import {maskKey, makeTheme} from '../src/ui/theme';
 import {useArmedConfirm} from '../src/ui/useArmedConfirm';
 import type {ChipRowFn, KeyState, SubHeaderFn} from '../App';
@@ -157,6 +160,32 @@ function KeyAppScreen({
       path !== null
         ? `Settings exported to ${path.replace('/storage/emulated/0/', '')}.`
         : 'Export failed: could not write the file.',
+    );
+  }, [setMsg]);
+
+  // 2026-08-11 (user need): a public user has no adb. This hands them a
+  // file they can copy off the tablet and send in a bug report.
+  const onExportLog = useCallback(async () => {
+    setMsg('writing the diagnostic log…');
+    let extra: Record<string, string | number> = {};
+    try {
+      const s = await loadStore();
+      const docs = docsSummary(s);
+      extra = {
+        docs: docs.length,
+        'pages read': docs.reduce((n, d) => n + d.read, 0),
+      };
+    } catch {
+      // best effort — a log without the summary is still worth sending
+    }
+    const path = await writeLogFile(extra);
+    setMsg(
+      path !== null
+        ? `Diagnostic log written to ${path.replace(
+            '/storage/emulated/0/',
+            '',
+          )}. Copy it over USB (or the Partner app) and attach it to your bug report.`
+        : 'Could not write the diagnostic log.',
     );
   }, [setMsg]);
 
@@ -306,6 +335,20 @@ function KeyAppScreen({
           </Text>
           <TouchableOpacity onPress={onExportSettings} style={styles.smallBtn}>
             <Text style={styles.smallBtnText}>Export settings</Text>
+          </TouchableOpacity>
+          <Text style={[styles.section, sf]}>Report a problem</Text>
+          <Text style={[styles.manual, mf]}>
+            The plugin keeps a short log of what it does. If something goes
+            wrong, export it right after the problem and attach the file to
+            your report — it lands in{' '}
+            {LOG_FILE_PATH.replace('/storage/emulated/0/', '')}, readable
+            over USB or from the Partner app. It records the plugin's own
+            activity and the names of the files it touched; it never
+            contains the text of your pages, your questions, the answers,
+            or your API key.
+          </Text>
+          <TouchableOpacity onPress={onExportLog} style={styles.smallBtn}>
+            <Text style={styles.smallBtnText}>Export diagnostic log</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={onImportSettings}
