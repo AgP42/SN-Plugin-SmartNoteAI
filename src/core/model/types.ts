@@ -60,7 +60,18 @@ export type ChatUsage = {
 };
 
 export type ChatResult =
-  | {ok: true; text: string; usage: ChatUsage; modelId: string; latencyMs: number}
+  | {
+      ok: true;
+      text: string;
+      usage: ChatUsage;
+      modelId: string;
+      latencyMs: number;
+      // The model stopped because it hit the token ceiling, not because it
+      // had finished: the text is CUT (device report 2026-08-12 — a dense
+      // page came back half-transcribed and nothing noticed, so it was
+      // stored as complete and never re-read).
+      truncated?: boolean;
+    }
   | {ok: false; reason: string; status?: number};
 
 // Credentials + model selection, parsed from the key file.

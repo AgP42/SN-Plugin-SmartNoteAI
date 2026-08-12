@@ -31,7 +31,11 @@ export const eurosTotal = (pages: number, centsPerPage: number): string =>
 
 // Long handwritten pages need room; the key-file maxTokens targets chat
 // answers and may be as low as 16. Never let it truncate a transcript.
-export const READER_MAX_TOKENS = 2000;
+// Raised from 2000 (device report 2026-08-12): a dense page came back CUT
+// at the ceiling and the half-transcript was stored as final. The cap is
+// not a cost — output tokens are billed as produced — so the only thing a
+// higher ceiling buys is room for the pages that need it.
+export const READER_MAX_TOKENS = 4000;
 
 // Deterministic reflow of a transcript into full lines (2026-07-13): the
 // prompt asks the model to reflow, but the OCR-annotation model is

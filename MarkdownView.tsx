@@ -108,7 +108,11 @@ type Props = {
   // and, if onWordPress is given, are tappable (Library page view: tap to
   // correct one word).
   lowWords?: string[];
-  onWordPress?: (w: string) => void;
+  // The ordinal tells the caller WHICH occurrence was tapped (0-based,
+  // document order). Without it a page carrying the same unsure word twice
+  // corrected the wrong one — the fix replaced the first match whichever
+  // one you touched (device report 2026-08-12).
+  onWordPress?: (w: string, nth: number) => void;
 };
 
 const BLACK = '#000000';
@@ -143,6 +147,10 @@ function MarkdownView(props: Props): React.JSX.Element {
   // fontSize / lineHeight / color, so we only set the per-span accents.
   // When a low-word set is active, each span's text is split so matching
   // words get the underline/bold + tap treatment.
+  // Counts occurrences PER WORD in document order across the whole render,
+  // so each tappable occurrence knows which one it is. Reset per render
+  // pass: the tree below is built synchronously, in order.
+  const lowSeen = new Map<string, number>();
   const renderSpans = (spans: InlineSpan[]): React.ReactNode =>
     spans.map((sp, idx) => {
       const accent = inlineStyle(sp.t) ?? undefined;
@@ -156,19 +164,23 @@ function MarkdownView(props: Props): React.JSX.Element {
       const parts = sp.s.split(WORD_SPLIT);
       return (
         <Text key={idx} selectable={selectable} style={accent}>
-          {parts.map((part, pi) =>
-            lowSet.has(part.toLowerCase()) ? (
+          {parts.map((part, pi) => {
+            if (!lowSet.has(part.toLowerCase())) {
+              return part;
+            }
+            const key = part.toLowerCase();
+            const nth = lowSeen.get(key) ?? 0;
+            lowSeen.set(key, nth + 1);
+            return (
               <Text
                 key={pi}
                 selectable={selectable}
                 style={LOW_STYLE}
-                onPress={onWordPress ? () => onWordPress(part) : undefined}>
+                onPress={onWordPress ? () => onWordPress(part, nth) : undefined}>
                 {part}
               </Text>
-            ) : (
-              part
-            ),
-          )}
+            );
+          })}
         </Text>
       );
     });

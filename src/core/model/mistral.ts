@@ -86,6 +86,13 @@ const extractText = (data: unknown): string => {
   return typeof content === 'string' ? content : '';
 };
 
+// 'length' = the answer was CUT at max_tokens. The API says so on every
+// call and nothing read it, so a transcript that stopped mid-page was
+// stored as if the model had finished (device report 2026-08-12).
+const wasTruncated = (data: unknown): boolean =>
+  (data as {choices?: Array<{finish_reason?: unknown}>})?.choices?.[0]
+    ?.finish_reason === 'length';
+
 // The one call the rest of the app uses. Never throws for HTTP/network
 // failures — returns {ok:false} with a reason so the UI can render it.
 // Transport (headers, error hints, one network retry) lives in http.ts.
@@ -114,6 +121,7 @@ export const sendChat = async (
   return {
     ok: true,
     text: extractText(data),
+    truncated: wasTruncated(data),
     usage: {
       inputTokens: Number(data.usage?.prompt_tokens ?? 0),
       outputTokens: Number(data.usage?.completion_tokens ?? 0),

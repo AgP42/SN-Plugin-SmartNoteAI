@@ -783,7 +783,16 @@ export const readNotePages = async (
     if (!v.ok) {
       visionRefused.push(page); // the request never landed
     }
-    if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
+    if (
+      v.ok &&
+      v.text.trim().length > 0 &&
+      !isBlankAnswer(v.text) &&
+      // A CUT answer must never win over a complete OCR text: the model
+      // hit its token ceiling mid-page, and the half-transcript used to be
+      // stored as final — the page then looked read and was never
+      // re-offered (device report 2026-08-12, page 12 of a dense note).
+      !(v.truncated === true && ocrText.length > 0)
+    ) {
       // Keep the OCR low-confidence words on the vision entry: they still
       // mark which words to double-check / add to the glossary.
       await store(page, v.text.trim(), 'medium', low);
@@ -792,7 +801,7 @@ export const readNotePages = async (
       // Vision failed or came back empty — the paid OCR text beats nothing.
       await store(page, ocrText, 'mistral-ocr', low);
       ok = true;
-      if (v.ok && stored.includes(page)) {
+      if (v.ok && v.truncated !== true && stored.includes(page)) {
         // Vision LANDED and had nothing to add: record it, or the drain at
         // the end of this very tick collects the page (source 'mistral-ocr',
         // text non-empty, never settled) and pays for a second Vision call

@@ -40,6 +40,7 @@ import {type SearchHit} from '../../src/core/store/librarySearch';
 import SearchControls from '../../SearchControls';
 import ActivityBanner from '../../src/ui/ActivityBanner';
 import {mdToPlain} from '../../src/core/text/markdown';
+import {replaceNthWord, lowAfterFix} from '../../src/core/text/wordFix';
 import {
   resolveAutoTarget,
   modeLabel,
@@ -461,7 +462,11 @@ function LibraryScreen({
   const [pageDraft, setPageDraft] = useState<string>('');
   const [pageBusy, setPageBusy] = useState<boolean>(false);
   // Tap-to-correct a single low-confidence word (v0.24): {orig, draft}.
-  const [wordFix, setWordFix] = useState<{orig: string; draft: string} | null>(
+  const [wordFix, setWordFix] = useState<{
+    orig: string;
+    draft: string;
+    nth: number;
+  } | null>(
     null,
   );
   // Library search (v0.25; advanced multi-criteria v0.25.9) + the
@@ -2224,20 +2229,13 @@ function LibraryScreen({
     ) {
       return;
     }
-    const {orig, draft} = wordFix;
-    const re = new RegExp(
-      `(^|[^A-Za-zÀ-ÖØ-öø-ÿ0-9])(${orig.replace(
-        /[.*+?^${}()|[\]\\]/g,
-        '\\$&',
-      )})(?![A-Za-zÀ-ÖØ-öø-ÿ0-9])`,
-    );
-    // Replacer FUNCTION on purpose: a template string would re-expand `$`
-    // sequences typed in the correction (e.g. "$100" → group insert,
-    // audit 2026-07-18).
-    const nextText = pageView.text.replace(re, (_m, p1: string) => p1 + draft);
-    const nextLow = (pageView.low ?? []).filter(
-      w => w.t.toLowerCase() !== orig.toLowerCase(),
-    );
+    const {orig, draft, nth} = wordFix;
+    // The rules live in src/core/text/wordFix.ts, with the device report
+    // of 2026-08-12 pinned as tests: rewrite the occurrence that was
+    // TAPPED (this used to hit the first match whichever one you touched),
+    // and keep the word flagged while any occurrence of it is left.
+    const nextText = replaceNthWord(pageView.text, orig, nth, draft);
+    const nextLow = lowAfterFix(pageView.low ?? [], orig, nextText);
     // Optimistic UI FIRST: show the correction instantly. The persistence
     // below does a slow ensureNoteFresh (save + retries); doing it before
     // the visible update made Replace feel dead, so people tapped it several

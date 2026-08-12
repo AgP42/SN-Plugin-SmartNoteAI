@@ -39,8 +39,8 @@ export interface PageViewProps {
   pageDraft: string;
   setPageDraft: (v: string) => void;
   pageBusy: boolean;
-  wordFix: {orig: string; draft: string} | null;
-  setWordFix: (v: {orig: string; draft: string} | null) => void;
+  wordFix: {orig: string; draft: string; nth: number} | null;
+  setWordFix: (v: {orig: string; draft: string; nth: number} | null) => void;
   pageImg: string | null;
   // v0.60.1: both render attempts failed — renders are host-bound
   // (generateNotePng needs the NOTE app, generateDocImage the DOC
@@ -231,8 +231,8 @@ function PageView({
                                 baseStyle={styles.manual}
                                 selectable
                                 lowWords={(pageView.low ?? []).map(w => w.t)}
-                                onWordPress={word =>
-                                  setWordFix({orig: word, draft: word})
+                                onWordPress={(word, nth) =>
+                                  setWordFix({orig: word, draft: word, nth})
                                 }
                               />
                             ) : (

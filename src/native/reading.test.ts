@@ -1154,6 +1154,37 @@ describe('manual PDF Redo on a blank page (readPdfPageVision)', () => {
   });
 });
 
+describe('a CUT vision answer never wins (device report 2026-08-12)', () => {
+  const cutRes = (text: string): FetchRes =>
+    jsonRes({choices: [{message: {content: text}, finish_reason: 'length'}]});
+
+  it('keeps the complete OCR text when the model stopped at its ceiling', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    route({
+      ocr: () => ocrRes('le texte complet de la page', GOOD),
+      chat: () => cutRes('le texte complet de la pa'),
+    });
+    await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    const e = getPage(s, NOTE, 0)!;
+    expect(e.text).toContain('le texte complet de la page'); // OCR kept
+    expect(e.source).toBe('mistral-ocr');
+    // …and NOT sealed as vision-settled, so the page can be read again.
+    expect(e.va).toBeUndefined();
+  });
+
+  it('an untruncated answer still wins as before', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    route({
+      ocr: () => ocrRes('texte ocr', GOOD),
+      chat: () => chatRes('texte vision complet'),
+    });
+    await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    expect(getPage(s, NOTE, 0)!.source).toBe('medium');
+  });
+});
+
 describe('vision landed but added nothing (release audit 2026-08-12)', () => {
   it('marks the page settled so the SAME tick\'s drain cannot re-bill it', async () => {
     const s = storeState.store;
