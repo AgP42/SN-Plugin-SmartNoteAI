@@ -101,8 +101,9 @@ export function parseInline(s: string): InlineSpan[] {
 
 // ---- blocks ----------------------------------------------------------
 
-const RE_FENCE = /^\s*```/;
-const RE_FENCE_END = /^\s*```\s*$/;
+// Exported so wordFix's mask toggles fenced-code exactly as the parser does.
+export const RE_FENCE = /^\s*```/;
+export const RE_FENCE_END = /^\s*```\s*$/;
 const RE_BLANK = /^\s*$/;
 const RE_H = /^(#{1,6})\s+(.*)$/;
 // Horizontal rule (---, ***, ___ alone) and the SALVAGE form for
@@ -130,8 +131,11 @@ function splitCells(line: string): string[] {
   return t.split('|').map(c => c.trim());
 }
 
-// A `|---|:--:|` GitHub table separator line.
-function isSeparatorRow(line: string): boolean {
+// A `|---|:--:|` GitHub table separator line. Exported so wordFix's
+// mask uses the EXACT same table detection (regression audit 2026-08-12: a
+// hand-rolled copy that did not require a pipe treated a `---` rule under a
+// pipe-containing sentence as a table, desyncing the word-fix offsets).
+export function isSeparatorRow(line: string): boolean {
   // Must contain a pipe: a bare '---' horizontal rule after a sentence
   // with a '|' in it is NOT a table (audit 2026-07-18).
   if (!line.includes('-') || !line.includes('|')) {

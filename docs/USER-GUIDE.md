@@ -354,9 +354,10 @@ under it; a single document can override its folder.
   updated or sent. To remove them, use *Clear transcript* on that document, or
   *Clear transcripts of Off notes* in the Library to wipe them all at once.
 - **Manual**: read only when *you* ask: a Sync button, or a chat question
-  that needs the page. **"Sync now" is a standing order**: if
-  the pass is interrupted (big backlog, no network, wrong app in the
-  background), it finishes **by itself** on later passes, Vision included.
+  that needs the page. **"Sync now" reads what it can in one pass** (up to
+  100 pages); if a big backlog remains, the counts show what is left, tap
+  Sync now again. Pending **Vision** passes still finish **by themselves** as
+  soon as the right app is open (a note for note pages, a PDF reader for PDFs).
 - **Auto**: read in the background, page by page, while the plugin is
   running.
 

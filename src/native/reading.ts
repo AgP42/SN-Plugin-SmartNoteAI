@@ -41,7 +41,9 @@ import {bytesToBase64} from '../core/util/base64';
 import {loadStore, mutateStore, flushStore} from './transcriptStoreIo';
 import {isBlankAnswer} from '../core/model/blankAnswer';
 import {readSettings} from './settings';
-import {effectiveMode} from '../core/store/autoEngine';
+import {effectiveMode, isAutoFolderKey} from '../core/store/autoEngine';
+import {orphanedModeFor, STRICTNESS} from '../core/store/renamePath';
+import {listDirNative} from './fs';
 import {
   readPageIds,
   readNotePageRevs,
@@ -64,6 +66,7 @@ import {
   touchDoc,
   remapDocPages,
   markDocTouched,
+  invalidateOwed,
   type LowWord,
   type TranscriptSource,
   type Store,
@@ -76,6 +79,7 @@ import {
   adoptPdfDoc,
   pdfRenameCandidates,
   adoptRenamedPdfDoc,
+  visionSettled,
 } from '../core/store/transcriptStore';
 import {provenGone, followRename} from './renameFollow';
 
@@ -120,11 +124,83 @@ const offRefused = async (
     return false;
   }
   try {
-    const st = await readSettings();
-    return effectiveMode(st.autoTargets ?? {}, path) === 'off';
+    return await isOffForRead(path);
   } catch {
     return false; // unreadable settings must never block normal reading
   }
+};
+
+// Fail-safe Off resolution for a path (release audit 2026-08-12, K1): a mode
+// is keyed BY PATH, so a rename strands the old key and the new path re-inherits
+// its folder's (possibly permissive) mode — an explicitly-Off note, renamed,
+// could then be read and sent to the AI. The default-Off change closes this for
+// UNTRACKED folders; this closes it for a note inside an Auto/Manual folder.
+//
+// Restrictive-only, exactly like orphanedModeFor: it can only ever make the
+// plugin read LESS. Cheap fast paths — it lists the folder ONLY when the path
+// has no own key AND a same-folder explicit key is STRICTER than what it would
+// inherit (the only situation a stranded stricter decision could exist).
+export const isOffForRead = async (path: string): Promise<boolean> => {
+  const st = await readSettings();
+  const targets = st.autoTargets ?? {};
+  if (effectiveMode(targets, path) === 'off') {
+    return true;
+  }
+  if (targets[path] !== undefined) {
+    return false; // an explicit non-Off decision AT this path speaks for itself
+  }
+  const cut = path.lastIndexOf('/');
+  if (cut <= 0) {
+    return false;
+  }
+  const dir = path.slice(0, cut);
+  const inherited = effectiveMode(targets, path);
+  // In-memory pre-check: is there a same-folder FILE key stricter than the mode
+  // this path inherits? If not, nothing could have been stranded — no listing.
+  const stricterHere = Object.keys(targets).some(
+    k =>
+      k !== path &&
+      !isAutoFolderKey(k) &&
+      k.slice(0, k.lastIndexOf('/')) === dir &&
+      STRICTNESS[targets[k].mode] > STRICTNESS[inherited],
+  );
+  if (!stricterHere) {
+    return false;
+  }
+  // A stranded stricter key exists in this folder. Prove the rename: exactly one
+  // explicit key here whose file is GONE, and this path is the sole untracked
+  // sibling (orphanedModeFor enforces both). listDirNative returns [] for an
+  // empty OR a failed listing, so an empty result proves nothing → do not refuse.
+  const entries = await listDirNative(dir);
+  if (entries.length === 0) {
+    return false;
+  }
+  const present = new Set(
+    entries.filter(e => !e.isDir).map(e => `${dir}/${e.name}`),
+  );
+  const goneInFolder: string[] = [];
+  for (const k of Object.keys(targets)) {
+    if (
+      k !== path &&
+      !isAutoFolderKey(k) &&
+      k.slice(0, k.lastIndexOf('/')) === dir &&
+      !present.has(k) &&
+      (await provenGone(k))
+    ) {
+      goneInFolder.push(k);
+    }
+  }
+  const untrackedInFolder = [...present].filter(
+    p => targets[p] === undefined && !isAutoFolderKey(p),
+  );
+  const res = orphanedModeFor(
+    targets,
+    path,
+    goneInFolder,
+    inherited,
+    untrackedInFolder,
+  );
+  return res?.mode === 'off';
 };
 
 export type ReadOutcome = {
@@ -560,6 +636,29 @@ export const pageStamp = async (
   return {hash: ids.get(page) ?? '', rev: revs.get(page)};
 };
 
+// SETTLE one OCR-only note page's vision marker (va ← rev), lock-guarded, so
+// nothing re-bills it. The two inline read-pass settle sites (empty and cut
+// Vision answers) were byte-identical, and a missing lock / markDocTouched here
+// has bitten before (N2 audit, round 3 #8) — so it lives in ONE place
+// (2026-08-15). Does NOT invalidate owed: the read pass's recordOwed runs at
+// end-of-pass and overwrites it; the Vision DRAIN, which settles AFTER
+// recordOwed, keeps its own conditional invalidateOwed.
+const settleNoteVisionMarker = async (
+  notePath: string,
+  page: number,
+): Promise<void> => {
+  await mutateStore(s => {
+    if (isPageLocked(s, notePath, page)) {
+      return false;
+    }
+    const e = getPage(s, notePath, page);
+    if (e !== null && e.source === 'mistral-ocr') {
+      e.va = e.rev ?? '';
+    }
+    markDocTouched(notePath);
+  });
+};
+
 // Read the given .note pages and store the results. v0.38 (user decision):
 // EVERY page goes OCR 4 → Vision, systematically — no escalation heuristic.
 // OCR runs first (its text rides as a hint and its word-confidence feeds the
@@ -787,36 +886,51 @@ export const readNotePages = async (
       v.ok &&
       v.text.trim().length > 0 &&
       !isBlankAnswer(v.text) &&
-      // A CUT answer must never win over a complete OCR text: the model
-      // hit its token ceiling mid-page, and the half-transcript used to be
-      // stored as final — the page then looked read and was never
-      // re-offered (device report 2026-08-12, page 12 of a dense note).
-      !(v.truncated === true && ocrText.length > 0)
+      // A CUT answer never takes the settled 'medium' slot: the model hit its
+      // token ceiling mid-page, and the half-transcript used to be stored as
+      // final — the page then looked read and was never re-offered (device
+      // report 2026-08-12, p12 of a dense note). A truncated answer instead
+      // falls to a 'mistral-ocr' branch below: with complete OCR it keeps the
+      // OCR text, with none it keeps the partial half — and EITHER way it is
+      // now SETTLED there (N2), because re-running Vision at the same ceiling
+      // would only re-truncate and re-bill. It re-opens if the ink changes.
+      v.truncated !== true
     ) {
       // Keep the OCR low-confidence words on the vision entry: they still
       // mark which words to double-check / add to the glossary.
       await store(page, v.text.trim(), 'medium', low);
       ok = true;
     } else if (ocrText.length > 0) {
-      // Vision failed or came back empty — the paid OCR text beats nothing.
+      // Vision failed, came back empty, or was CUT — the paid OCR text beats
+      // a half-transcript, and stays 'mistral-ocr'.
       await store(page, ocrText, 'mistral-ocr', low);
       ok = true;
-      if (v.ok && v.truncated !== true && stored.includes(page)) {
-        // Vision LANDED and had nothing to add: record it, or the drain at
-        // the end of this very tick collects the page (source 'mistral-ocr',
-        // text non-empty, never settled) and pays for a second Vision call
-        // on the identical image (release audit 2026-08-12). Same marker
-        // finishVisionLive writes, keyed the same way.
-        await mutateStore(s => {
-          if (isPageLocked(s, notePath, page)) {
-            return false;
-          }
-          const e = getPage(s, notePath, page);
-          if (e !== null && e.source === 'mistral-ocr') {
-            e.va = e.rev ?? '';
-          }
-          markDocTouched(notePath);
-        });
+      if (v.ok && stored.includes(page)) {
+        // Vision LANDED (empty OR truncated): SETTLE the page so nothing
+        // re-bills it. Full-scope audit 2026-08-12 (N2): the old guard settled
+        // ONLY the empty case, so a truncated page stayed unsettled → the drain
+        // re-ran Vision on the identical image at the SAME 4000-token ceiling,
+        // re-truncated, and only THEN settled — one wasted paid Vision call per
+        // over-length page. Re-running at the same ceiling can never succeed;
+        // the page is as done as it gets and re-opens only if its ink changes
+        // (va is keyed to the rev). Same marker finishVisionLive writes.
+        await settleNoteVisionMarker(notePath, page);
+      }
+    } else if (
+      v.ok &&
+      v.truncated === true &&
+      v.text.trim().length > 0 &&
+      !isBlankAnswer(v.text)
+    ) {
+      // CUT vision answer with NO OCR text to fall back on (audit 2026-08-12):
+      // the OCR leg failed, so the only text we have is the truncated half.
+      // Keep it (a partial transcript beats a blank page) and SETTLE it (N2):
+      // re-running Vision at the same ceiling would only re-truncate and
+      // re-bill. It re-opens if the ink changes (va keyed to the rev).
+      await store(page, v.text.trim(), 'mistral-ocr', low);
+      ok = true;
+      if (stored.includes(page)) {
+        await settleNoteVisionMarker(notePath, page);
       }
     } else if (v.ok && ocrRan) {
       // Genuine blank page: OCR ran and saw nothing, and Vision returned
@@ -970,6 +1084,15 @@ export const readNotePages = async (
               e.va = pageRevs.get(page); // the rev-keyed marker follows
             }
             markDocTouched(notePath);
+            // Settling the page's rev marker here (write-then-erase, outside
+            // upsertPage) makes any recorded owed.read stale: pagesNeedingRead no
+            // longer flags this page, but owed still counts it. Direct callers
+            // (readThenExport, chat gatherContext) don't recompute owed and would
+            // show a permanent phantom "N to sync" (owed-lifecycle audit
+            // 2026-08-14). Safe from phantom-reverse: those callers read the FULL
+            // needed set, so after the pass structural correctly shows 0; the
+            // Auto/Sync tick recomputes owed regardless.
+            invalidateOwed(st, notePath);
           });
           unchangedSkipped++;
           done++;
@@ -1247,6 +1370,20 @@ export const finishVisionLive = async (
             }
           }
           markDocTouched(notePath);
+          // The drain runs AFTER the note loop's recordOwed, and settling these
+          // pages (ocr→finished) makes any recorded owed.vision stale-HIGH with
+          // no recompute path for a STAMPED note — drop it so the readers fall
+          // back to the now-correct structural count (owed-lifecycle audit
+          // 2026-08-14: this was a permanent phantom "✓ vision…" / canSync stuck).
+          // ONLY when owed.read===0: a note still owing a paid READ is unstamped
+          // and its recordOwed re-runs next tick anyway, and dropping owed there
+          // would HIDE that read backlog (structural queued=0 for an edited-but-
+          // present page) — a transient under-report each draining tick. read===0
+          // is exactly the stuck-stamped case the drain must clear.
+          const owedNow = s.docs[notePath]?.owed;
+          if (owedNow !== undefined && owedNow.read === 0) {
+            invalidateOwed(s, notePath);
+          }
         });
       }
     }
@@ -1734,26 +1871,6 @@ export const readPdfPageVision = async (
 // 'mistral-ocr', non-empty) — the "Vision to retry" queue. Used to resume
 // Vision without re-OCR (Option A, 2026-07-29; generic since v0.87: the Auto
 // tick drains the note-side debt with it too).
-// Pages of ANY document still owed a Vision pass. Audit 2026-08-02 #8:
-// the PDF-only variant below was used as the "is this doc finished?" test
-// for notes too, where docHash is '' so no marker ever matched and a
-// Manual note's Sync-now order was never released. This one asks the right
-// question per kind.
-export const pagesOwedVision = (store: Store, path: string): number[] => {
-  const doc = store.docs[path];
-  if (doc === undefined) {
-    return [];
-  }
-  const isPdf = !isNotePath(path);
-  return (Object.entries(doc.pages) as [string, PageEntry][])
-    .filter(([, e]) => e.source === 'mistral-ocr' && e.text.trim().length > 0)
-    .filter(([, e]) => !visionSettled(e, {isPdf, docHash: doc.docHash}))
-    .filter(([k]) => !isPageLocked(store, path, Number(k)))
-    .map(([k]) => Number(k))
-    .filter(n => Number.isInteger(n))
-    .sort((a, b) => a - b);
-};
-
 export const pendingVisionPages = (
   store: Store,
   pdfPath: string,
@@ -1777,37 +1894,9 @@ export const pendingVisionPages = (
 
 // ---- the `va` marker: ONE reader, three writers ----------------------
 // `va` records "Vision already ran on this page's CURRENT content and had
-// nothing to add". Its value identifies that content, and the identity
-// differs by page kind:
-//   note page          -> its ink rev ('' when the note has no rev yet)
-//   annotated PDF page -> 'mh:<hash of the rendered page+ink image>'
-//   plain PDF page     -> 'd:<the document hash it was read at>'
-// Audit 2026-08-02 #5: each reader only understood its own format, so an
-// annotated PDF page carrying 'mh:…' looked unmarked to the drain (which
-// re-billed it and overwrote the marker with 'd:…'), and vice versa. This
-// single predicate understands all three, and NOTHING else may test `va`.
-export const visionSettled = (
-  e: PageEntry,
-  ctx: {isPdf: boolean; docHash: string},
-): boolean => {
-  if (e.va === undefined) {
-    return false;
-  }
-  if (!ctx.isPdf) {
-    return e.rev !== undefined ? e.va === e.rev : e.va === '';
-  }
-  // Plain PDF page: settled at this document revision. Both sides are
-  // normalised to the printed-bytes prefix, so markers written before
-  // Phase B ("d:bytes|mNN") keep settling after the doorbell migration.
-  if (e.va.startsWith('d:')) {
-    return e.va.slice(2).split('|')[0] === ctx.docHash.split('|')[0];
-  }
-  // Annotated PDF page ('mh:<pixel hash>'): the vision pass owns it — it
-  // re-renders and re-checks the hash itself when the .mark doorbell
-  // moves. For every other caller (drain collector, pending counters) the
-  // page is settled: nothing else may spend on it.
-  return e.va.startsWith('mh:');
-};
+// nothing to add". The predicate that reads it (visionSettled) now lives in
+// the store core so the library counters share it (unified 2026-08-12); NOTHING
+// else may test `va` directly.
 
 // Vision pass over a set of PDF pages (Option A: every page gets Vision, like a
 // note). Reuses each page's STORED OCR text as the hint and SKIPS the paid OCR
@@ -2394,6 +2483,12 @@ export const readPdf = async (
         // skipped — their ink must ring it again after an unlock (#3).
         d.markSz = markSize;
       }
+      // The re-read completed for these bytes (even if every page was
+      // lock-skipped, so no upsertPage cleared it): the changed-PDF owed flag
+      // is satisfied — drop it, else a whole-doc-locked PDF whose bytes changed
+      // shows a permanent "N to sync" Sync-now can never clear (owed-lifecycle
+      // audit 2026-08-14). A still-annotated locked page re-flags via markSz.
+      invalidateOwed(s, pdfPath);
     });
     // Audit 2026-07-30 (money): the whole-file OCR was just paid — it must
     // hit disk NOW, before the (long) Vision pass. The 800 ms persist

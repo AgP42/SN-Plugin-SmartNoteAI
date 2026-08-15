@@ -17,7 +17,12 @@ export type AutoMode = 'off' | 'manual' | 'auto';
 export type AutoTarget = {mode: AutoMode};
 
 // A path with no own entry and no tracked ancestor falls back to this.
-export const DEFAULT_MODE: AutoMode = 'manual';
+// 2026-08-12 (privacy-first, user decision): DEFAULT is Off — nothing is read
+// until the user opts a document or a folder in. This also makes a rename in an
+// UNTRACKED folder safe (the fallback is Off, not Manual). A note inside an
+// explicitly Auto/Manual folder still needs the read-gate fail-safe
+// (isOffForRead) because it re-inherits the folder's mode after a rename.
+export const DEFAULT_MODE: AutoMode = 'off';
 
 // Chip cycle order: Off -> Manual -> Auto -> Off.
 export const MODE_CYCLE: AutoMode[] = ['off', 'manual', 'auto'];

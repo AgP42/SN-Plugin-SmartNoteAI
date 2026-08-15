@@ -99,6 +99,19 @@ export type DocEntry = {
   // the page block); kws = Supernote keywords {p: 0-indexed page, t: text}.
   stars?: number[];
   kws?: Array<{p: number; t: string}>;
+  // Sync-count redesign (2026-08-14): the ONE authoritative "what does this doc
+  // still owe?", written by the ENGINE from its own per-page read decision and
+  // READ by the UI, so the count can never disagree with what "Sync now" does.
+  // It replaces the tangle of drifting counters (manualStale, pageStage-for-UI).
+  //   read   = pages needing a PAID read (exactly what "Sync now" reads)
+  //   vision = pages that owe ONLY the Vision leg, DISJOINT from `read` (a page
+  //            needing a re-read redoes Vision too, so it is never in both —
+  //            this disjointness is what a doc-level structural count could not
+  //            express, and it double-counted an edited OCR page).
+  // Both counts are INVALIDATED on any store write (upsertPage clears owed) and
+  // recomputed by the engine when absent, so the Vision drain can never leave
+  // either stale.
+  owed?: {read: number; vision: number; at: number};
 };
 
 export type Store = {
@@ -211,7 +224,69 @@ export const sanitizeDocEntry = (doc: unknown): DocEntry | null => {
       entry.kws = kws;
     }
   }
+  const o = d.owed;
+  if (
+    o != null &&
+    typeof o === 'object' &&
+    typeof o.read === 'number' &&
+    o.read >= 0 &&
+    typeof o.vision === 'number' &&
+    o.vision >= 0
+  ) {
+    entry.owed = {
+      read: Math.max(0, Math.floor(o.read)),
+      vision: Math.max(0, Math.floor(o.vision)),
+      at: typeof o.at === 'number' ? o.at : 0,
+    };
+  }
   return entry;
+};
+
+// Read/write the authoritative sync-owed counts (redesign 2026-08-14). setOwed
+// is the ONE writer path used by the engine; nothing else writes `owed`.
+export const getOwed = (
+  store: Store,
+  path: string,
+): {read: number; vision: number} | null => {
+  const o = store.docs[path]?.owed;
+  return o === undefined ? null : {read: o.read, vision: o.vision};
+};
+
+export const setOwed = (
+  store: Store,
+  path: string,
+  owed: {read: number; vision: number},
+  now: number,
+): void => {
+  const doc = store.docs[path];
+  if (doc === undefined) {
+    return;
+  }
+  doc.owed = {
+    read: Math.max(0, Math.floor(owed.read)),
+    vision: Math.max(0, Math.floor(owed.vision)),
+    at: now,
+  };
+  // setOwed writes doc.owed directly (not via docOf), so it MUST mark the shard
+  // touched or the IO layer never persists it — a changed-PDF owed flag set by
+  // recordOwed (its ONLY store mutation) was silently lost on restart, reviving
+  // the round-5 phantom-PDF bug (owed-persistence audit 2026-08-14).
+  markDocTouched(path);
+};
+
+// Invalidate the engine's owed cache: any mutation that changes a doc's page
+// set or page markers (va/vh/rev) makes the last recorded owed stale, so it
+// must be dropped — a null owed makes every reader fall back to the (now
+// correct) structural count until the engine's next pass recomputes it. The
+// ONE invalidator, mirroring setOwed as the ONE writer (owed-lifecycle audit
+// 2026-08-14: the drain's va-settle and Clear/remove/remap bypassed upsertPage
+// and left owed stale-HIGH — phantom "✓ vision…" / cleared pages shown ✓✓).
+export const invalidateOwed = (store: Store, path: string): void => {
+  const doc = store.docs[path];
+  if (doc !== undefined && doc.owed !== undefined) {
+    doc.owed = undefined;
+    markDocTouched(path);
+  }
 };
 // (parseStore deleted in Lot 1 — nothing parses a legacy whole-store
 // JSON since the v1 migration was purged in Phase C.)
@@ -358,6 +433,14 @@ export const upsertPage = (
   }
   doc.pages[String(page)] = entry;
   doc.usedAt = now;
+  // Invalidate the engine's owed count whenever a page ENTRY changes here
+  // (redesign audit 2026-08-14): owed is the engine's authoritative read count,
+  // but chat / re-read / the Vision drain also persist entries WITHOUT calling
+  // recordOwed. Clearing it at THE store write means no writer can leave owed
+  // stale — the UI falls back to the (accurate-for-read-pages) structural count
+  // until the next engine pass rewrites owed. Marker-only mutations (va/vh/rev)
+  // do not go through here, so they correctly leave owed intact.
+  doc.owed = undefined;
 };
 
 // The ONE entry factory (refactor v0.36 §1.2): every writer goes through
@@ -773,6 +856,7 @@ export const remapDocPages = (
     }
   }
   doc.pages = next;
+  invalidateOwed(store, path); // page set changed → owed stale
   return {moved, dropped};
 };
 
@@ -866,7 +950,9 @@ export const removePages = (
   }
   if (Object.keys(doc.pages).length === 0) {
     delete store.docs[path];
+    return;
   }
+  invalidateOwed(store, path); // dropped entries → owed stale
 };
 
 // Fully drop ONE document's local transcript (all pages + docHash + stamp +
@@ -925,6 +1011,7 @@ export const clearDocRespectingLocks = (
   doc.pages = kept;
   doc.docHash = ''; // a future read re-covers the unlocked pages
   delete doc.markSz;
+  invalidateOwed(store, path); // unlocked entries dropped → owed stale
   return {
     changed: true,
     cleared: entries.length - locked.length,
@@ -971,9 +1058,136 @@ export type DocSummary = {
   // 'improved' / 'user'). Lets the SYNCHRONISATION frame show the real
   // per-stage backlog instead of a job counter that conflated "OCR
   // running at Mistral" with "OCR done, vision pending".
-  ocrOnly: number;
-  visionDone: number;
+  // Stage tally over the doc's STRUCTURAL pages (unified 2026-08-12): the ONE
+  // source the tree row, the SYNC bar and computeSyncFrame all read, so a blank
+  // page, a vision-settled page and an OCR-only page can never be counted three
+  // different ways again. queued = needs a paid read (matches pagesNeedingRead);
+  // ocrPending = OCR text on device, vision still owed; visioned = done (vision,
+  // hand-edit, blank negative-cache, or a locked/settled OCR page).
+  queued: number;
+  ocrPending: number;
+  visioned: number;
+  // Authoritative sync-owed READ count written by the engine (redesign
+  // 2026-08-14). When present the UI uses owed.read (exactly what "Sync now"
+  // reads); when absent (a doc the engine has not processed yet) it falls back
+  // to the structural `queued` above. The Vision count is ALWAYS structural
+  // (`ocrPending`) so the batch Vision drain never leaves it stale.
+  owed?: {read: number; vision: number};
   updatedAt: number;
+};
+
+// ---- vision-settled predicate (unified 2026-08-12) -------------------------
+// Moved here from reading.ts so the library counters and the read engine share
+// ONE definition. `va` records "Vision already ran on this page's CURRENT
+// content and had nothing to add". Its identity differs by page kind:
+//   note page          -> its ink rev ('' when the note has no rev yet)
+//   plain PDF page      -> 'd:<the document hash it was read at>'
+//   annotated PDF page  -> 'mh:<hash of the rendered page+ink image>'
+export const visionSettled = (
+  e: PageEntry,
+  ctx: {isPdf: boolean; docHash: string},
+): boolean => {
+  if (e.va === undefined) {
+    return false;
+  }
+  if (!ctx.isPdf) {
+    return e.rev !== undefined ? e.va === e.rev : e.va === '';
+  }
+  if (e.va.startsWith('d:')) {
+    return e.va.slice(2).split('|')[0] === ctx.docHash.split('|')[0];
+  }
+  return e.va.startsWith('mh:');
+};
+
+export type PageStage = 'queue' | 'ocr' | 'finished';
+
+// The ONE classification of a page's pipeline stage. classifyPipeline (the SYNC
+// STATUS bar), docsSummary (the tree row + "to sync"), and the read engine all
+// route through this, so no two counters can disagree again (release audit
+// 2026-08-12: the same page was simultaneously counted queue / on-going / done
+// by three code paths). Matches pagesNeedingRead: only a 'queue' page owes a
+// paid read; an 'ocr' page owes the cheaper Vision leg; 'finished' owes nothing.
+export const pageStage = (
+  e: PageEntry | undefined,
+  ctx: {isPdf: boolean; docHash: string; docLocked: boolean; pdfCovered: boolean},
+): PageStage => {
+  if (e === undefined) {
+    // No entry: a text-less page of a covered PDF is done (the whole-file OCR
+    // ran and found nothing); anything else was never read.
+    return ctx.pdfCovered ? 'finished' : 'queue';
+  }
+  if (e.text.trim().length === 0) {
+    return 'finished'; // read and found BLANK (negative cache) — done  [K4]
+  }
+  if (e.source !== 'mistral-ocr') {
+    return 'finished'; // vision / improved / hand-edited text
+  }
+  // OCR-only text. Vision is owed UNLESS it already ran and had nothing to add
+  // (settled), or the page is frozen (locked) — then it is as done as it gets.
+  if (
+    ctx.docLocked ||
+    e.lock === true ||
+    visionSettled(e, {isPdf: ctx.isPdf, docHash: ctx.docHash})
+  ) {
+    return 'finished';
+  }
+  return 'ocr'; // OCR text on device, genuinely awaiting Vision
+};
+
+// Per-doc stage tally over the STRUCTURAL page range (0..total-1), so pages that
+// were never read (no entry) are counted too.
+export const docStageCounts = (
+  store: Store,
+  path: string,
+): {queued: number; ocrPending: number; visioned: number} => {
+  const doc = store.docs[path];
+  const total = docPageCount(store, path);
+  let queued = 0;
+  let ocrPending = 0;
+  let visioned = 0;
+  if (doc !== undefined) {
+    const isPdf = /\.pdf$/i.test(path);
+    const ctx = {
+      isPdf,
+      docHash: doc.docHash ?? '',
+      docLocked: doc.lock === true,
+      pdfCovered: isPdf && (doc.docHash ?? '') !== '',
+    };
+    for (let p = 0; p < total; p++) {
+      const st = pageStage(doc.pages[String(p)], ctx);
+      if (st === 'queue') {
+        queued++;
+      } else if (st === 'ocr') {
+        ocrPending++;
+      } else {
+        visioned++;
+      }
+    }
+  }
+  return {queued, ocrPending, visioned};
+};
+
+// The ONE selection of a doc's pending paid work, shared by the SYNC bar
+// (classifyPipeline) and the SYNCHRONISATION frame (computeSyncFrame) so the two
+// can never drift (they used to keep "exactly the same combination" in agreement
+// BY HAND). read = the engine's authoritative owed.read when present, else the
+// structural queue; vision = owed.vision when present, else structural ocrPending;
+// both DISJOINT by construction and clamped so read+vision can never exceed total
+// (a stale owed can't break the partition or push upToDate negative).
+export const docPending = (
+  owed: {read: number; vision: number} | undefined,
+  structural: {queued: number; ocrPending: number},
+  total: number,
+): {read: number; vision: number} => {
+  const read = Math.max(
+    0,
+    Math.min(total, owed !== undefined ? owed.read : structural.queued),
+  );
+  const vision = Math.max(
+    0,
+    Math.min(total - read, owed !== undefined ? owed.vision : structural.ocrPending),
+  );
+  return {read, vision};
 };
 
 export const docsSummary = (store: Store): DocSummary[] => {
@@ -988,11 +1202,10 @@ export const docsSummary = (store: Store): DocSummary[] => {
     if (read === 0 && total === 0) {
       continue; // consent-only docs are noise in a library view
     }
-    // Per-stage split (v0.68): a page with OCR text still tagged
-    // 'mistral-ocr' has not been through vision; anything else with text
-    // has (blank vision keeps the OCR text but is promoted to 'medium').
-    const ocrOnly = withText.filter(p => p.source === 'mistral-ocr').length;
-    const visionDone = pages - ocrOnly;
+    // Unified per-stage split (2026-08-12) via pageStage — over the STRUCTURAL
+    // range, so never-read pages count as queued, and blank / vision-settled /
+    // locked OCR pages count as done (the three counters used to disagree).
+    const {queued, ocrPending, visioned} = docStageCounts(store, path);
     const i = path.lastIndexOf('/');
     out.push({
       path,
@@ -1007,8 +1220,16 @@ export const docsSummary = (store: Store): DocSummary[] => {
       // and counting them as "to read" left a permanent phantom backlog
       // ("2 pages to sync" forever, device report 2026-07-18).
       pdfCovered: /\.pdf$/i.test(path) && (doc.docHash ?? '') !== '',
-      ocrOnly,
-      visionDone,
+      queued,
+      ocrPending,
+      visioned,
+      owed:
+        doc.owed === undefined
+          ? undefined
+          : {
+              read: doc.owed.read,
+              vision: doc.owed.vision,
+            },
       updatedAt: doc.usedAt,
     });
   }
@@ -1128,6 +1349,13 @@ export const setDocLock = (store: Store, path: string, on: boolean): void => {
     delete doc.lock;
   }
   markDocTouched(path);
+  // A lock toggle changes what owed SHOULD be: pageNeedsRead and pageStage both
+  // branch on the lock (a locked page owes nothing; an unlocked edited page owes
+  // a re-read). Nothing else recomputes owed on a toggle (bytes/footer-sig/
+  // storePending all unchanged), so the cache must be dropped here or it goes
+  // stale — phantom "✓ vision…" on lock, hidden read debt on unlock (audit
+  // 2026-08-14). invalidateOwed is a no-op when no owed was recorded.
+  invalidateOwed(store, path);
 };
 
 export const setPageLock = (
@@ -1156,6 +1384,7 @@ export const setPageLock = (
     delete e.lock;
   }
   markDocTouched(path);
+  invalidateOwed(store, path); // lock feeds pageNeedsRead/pageStage → owed stale
 };
 
 // How many pages of a doc are individually locked (badge in the grid).

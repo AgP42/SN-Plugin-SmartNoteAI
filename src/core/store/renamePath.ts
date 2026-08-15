@@ -90,7 +90,7 @@ export const migrateAgentPaths = (
 // deliberately FAIL-SAFE — it is applied only when the orphaned mode is MORE
 // restrictive than what the path would inherit, so being wrong can only ever
 // make the plugin read LESS, never more.
-const STRICTNESS: Record<AutoMode, number> = {off: 2, manual: 1, auto: 0};
+export const STRICTNESS: Record<AutoMode, number> = {off: 2, manual: 1, auto: 0};
 
 export const orphanedModeFor = (
   targets: Record<string, AutoTarget>,

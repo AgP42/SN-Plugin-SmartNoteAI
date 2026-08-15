@@ -18,11 +18,6 @@ jest.mock('./settings', () => ({
   updateSettingsWith: (...a: unknown[]) => mockUpdateSettingsWith(...a),
 }));
 
-const mockRenameManualWanted = jest.fn();
-jest.mock('./autoTranscript', () => ({
-  renameManualWanted: (...a: unknown[]) => mockRenameManualWanted(...a),
-}));
-
 import {provenGone, followRename} from './renameFollow';
 import {
   emptyStore,
@@ -101,11 +96,10 @@ describe('followRename', () => {
     expect(updater({} as Settings)).toEqual({});
   });
 
-  it('hands the standing Sync order to its one writer, and retires the ghost', async () => {
+  it('retires the ghost entry and follows the freeze on rename', async () => {
     seed();
     setDocLock(storeRef.state, OLD, true);
     await followRename(OLD, NEW);
-    expect(mockRenameManualWanted).toHaveBeenCalledWith(OLD, NEW);
     expect(storeRef.state.docs[OLD]).toBeUndefined(); // ghost gone
     expect(storeRef.state.docs[NEW].lock).toBe(true); // freeze followed
   });

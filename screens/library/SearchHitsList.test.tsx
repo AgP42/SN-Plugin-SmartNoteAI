@@ -57,7 +57,11 @@ describe('SearchHitsList smoke', () => {
   });
 
   it('a tracked doc offers + Add to ▾', () => {
-    const r = render(baseProps());
+    // Default mode is Off (2026-08-12), so the doc must be explicitly tracked
+    // to offer the picker — an untracked doc now shows the Off chip.
+    const r = render(
+      baseProps({autoTargets: {'/Note/Work/meeting.note': {mode: 'manual'}}}),
+    );
     expect(texts(r)).toContain('+ Add to ▾');
     expect(texts(r)).not.toContain('Off');
   });

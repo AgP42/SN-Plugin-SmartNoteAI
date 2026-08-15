@@ -28,6 +28,10 @@ import {
   getStamp,
   setStamp,
   docsSummary,
+  setOwed,
+  getOwed,
+  pageStage,
+  docPageCount,
 } from '../core/store/transcriptStore';
 import {
   pagesNeedingRead,
@@ -40,7 +44,6 @@ import {
   pdfMarkSzOf,
   pendingVisionPages,
   finishVisionLive,
-  pagesOwedVision,
 } from './reading';
 import {
   readFooterRevs,
@@ -106,58 +109,14 @@ const recordAutoSync = (name: string, pages: number): void => {
   updateSettings({recentAutoSyncs: [...recentAutoSyncs]}).catch(() => {});
 };
 
-// v0.87 "Sync now is an ORDER, not a tap-again loop" (user 2026-07-30):
-// MANUAL docs whose sync the user explicitly requested and whose debt is not
-// gone yet (chunked >100 pages, offline cut, wrong render host, Vision
-// pending). Background ticks treat them as paid-allowed until the debt —
-// Vision included — clears, then drop them. PERSISTED (survives restarts);
-// ONE writer: this module.
-let manualWanted = new Set<string>();
-// True when the attended bypass came from an order RESTORED at boot rather
-// than a tap in this session (release audit 2026-08-12).
-let hydratedOrder = false;
-export const hydrateManualWanted = async (): Promise<void> => {
-  try {
-    manualWanted = new Set((await readSettings()).manualSyncWanted ?? []);
-    if (manualWanted.size > 0) {
-      // A persisted Sync-now order resumes as the user's own work: the
-      // first tick runs attended, and the flag then lives only while the
-      // backlog actually progresses (round 10 #2/#9).
-      userBacklog = true;
-      hydratedOrder = true;
-    }
-  } catch {
-    // memory set stays; the next persist writes it anyway
-  }
-};
-export const getManualWanted = (): ReadonlySet<string> => manualWanted;
-// User decision 2026-08-03: a standing Sync-now order must be CANCELLABLE
-// without mode gymnastics. No path = cancel them all.
-export const cancelManualSync = (path?: string): void => {
-  if (path !== undefined) {
-    manualWanted.delete(path);
-  } else {
-    manualWanted.clear();
-  }
-  persistManualWanted();
-};
-// The file this order was placed on was RENAMED (2026-08-10). The engine
-// deliberately never prunes on absence, so without this the order sits
-// inert forever — and a non-empty manualWanted keeps the unattended spend
-// cap bypassed for the whole session (see mayPayFor). ONE writer: this
-// module owns manualSyncWanted, so the rename follow-through calls in.
-export const renameManualWanted = (from: string, to: string): void => {
-  if (!manualWanted.has(from)) {
-    return;
-  }
-  manualWanted.delete(from);
-  manualWanted.add(to);
-  persistManualWanted();
-};
-
-const persistManualWanted = (): void => {
-  updateSettings({manualSyncWanted: [...manualWanted]}).catch(() => {});
-};
+// (Removed 2026-08-14: the "Sync now = standing ORDER" registry (manualWanted /
+// manualSyncWanted). It was a per-document to-do list whose only unique job was
+// auto-continuing a Manual OCR backlog >100 pages across background ticks — a
+// marginal convenience that leaked stale orders, showed a misleading counter,
+// paid for Manual docs in the background (against the meaning of "Manual"), and
+// welded itself to the spend cap. "Sync now" now reads what it can in one pass;
+// the 4 queues show the remainder and the user re-taps; the Vision drain still
+// finishes the Vision leg for every non-Off doc on its own.)
 
 // Epoch ms of the last pass that actually ran (for the Library "last sync"
 // line). 0 = never this session.
@@ -253,8 +212,16 @@ export const getPdfFails = (): ReadonlyMap<string, number> => pdfFails;
 // explicit/force pokes) — the v0.87.4 "ping" attempted 3 doomed renders on
 // EVERY 20 s tick, a steady tax on the e-ink UI thread.
 const PROBE_RETRY_MS = 60_000;
-let lastNoteProbeFailAt = 0;
-let lastPdfProbeFailAt = 0;
+// ONE render-cooldown clock per kind (2026-08-15): the epoch ms until which a
+// KIND's renders are stood down after a failed probe. Replaces the two
+// last*ProbeFailAt timestamps and their scattered writes with one setter.
+// (Kept SEPARATE from the per-tick noteRenderDead below — that has different
+// bypass semantics: a note-host / force pass ignores this cooldown but still
+// stands the rest of THIS tick down once a probe aborts.)
+const renderBlockedUntil = {note: 0, pdf: 0};
+const blockRender = (kind: 'note' | 'pdf', now: number): void => {
+  renderBlockedUntil[kind] = now + PROBE_RETRY_MS;
+};
 // For the Library auto-rebind (v0.88.3): true when PDF Vision debt exists
 // but PDF renders are failing (stale host binding).
 let pdfVisionBlocked = false;
@@ -270,18 +237,16 @@ let lastHostKind: 'note' | 'pdf' | null = null;
 export const getLastHostKind = (): 'note' | 'pdf' | null => lastHostKind;
 // Last footer signature seen for a MANUAL target's free refresh (they are
 // never stamped — stamps mean "fully covered" — so without this they would
-// re-walk on every tick).
+// re-walk on every tick). NOTE (2026-08-15): kept, NOT folded into the
+// byte-size gate — a manual note with an unsynced backlog is storePending, so
+// the byte gate never fires for it (forceProcess); and recording sizeAtSkip on
+// the free path is unsafe because the .note writes bytes BEFORE the footer sig
+// (firmware lag, bug 2026-07-15) — the grown size would seal a missed edit.
 const manualSeenSig = new Map<string, string>();
-// v0.53 (device report: an EDITED Manual page showed "0 to sync"): an
-// in-place edit keeps its store entry, so the structural counters
-// (total − entries) can't see it — only pagesNeedingRead (rev compare)
-// can, and it's FREE. This map carries the last known per-note stale
-// count; the Library counters override structure with it when present.
-const manualStale = new Map<string, number>();
-export const getManualStale = (): ReadonlyMap<string, number> => manualStale;
-export const setManualStale = (path: string, n: number): void => {
-  manualStale.set(path, n);
-};
+// (manualStale removed in the sync-count redesign 2026-08-14 — the per-doc
+// `doc.owed` in the store, written by recordOwed, is the ONE authoritative
+// count now, read directly by the Library. An in-place edit still shows up
+// because owed is a FRESH pagesNeedingRead, which compares revs.)
 
 export type AutoTickResult = {
   ran: boolean;
@@ -409,6 +374,71 @@ export const resolveTrackedNotes = async (
 
 // One background pass. Reads its own config (settings + key) so callers
 // just need a CaptureDeps. Serialized: overlapping calls no-op.
+// The ONE writer of doc.owed (sync-count redesign 2026-08-14). Computes the
+// authoritative "still owes" counts from the engine's OWN read decision
+// (pagesNeedingRead) plus the vision-owed count, and stores them. Called on
+// EVERY doc-processing (free pass and paid pass), so the UI count can never
+// drift from what "Sync now" actually reads — it IS that number.
+// `precomputedReadPages` (a page LIST, not a count) reuses a pagesNeedingRead
+// already run this pass, or expresses a whole-doc re-read (a changed PDF passes
+// EVERY page); otherwise recordOwed re-runs pagesNeedingRead. The Vision count
+// is ALWAYS derived disjoint from that read list — round-7 audit: an earlier
+// version hard-set vision=0 on the precomputed path, so a fully-read note that
+// still owed Vision showed as done. A failed change-check leaves the previous
+// count untouched — never overwrite the truth with 0 on an error.
+export const recordOwed = async (
+  deps: CaptureDeps,
+  notePath: string,
+  wanted: number[],
+  precomputedReadPages?: number[],
+): Promise<void> => {
+  const now = Date.now();
+  let readPages = precomputedReadPages;
+  if (readPages === undefined) {
+    const need = await pagesNeedingRead(deps, notePath, wanted).catch(() => null);
+    if (need === null) {
+      return; // change-check failed — keep the last good count
+    }
+    // Exclude pages parked by the per-page failure backoff: the read loop
+    // permanently drops them (needed.filter, MAX_PAGE_FAILS), so counting them
+    // would show "N to sync" that Sync-now can never clear — owed must be what
+    // the reader ACTUALLY attempts (redesign audit 2026-08-14).
+    readPages = need.filter(
+      p => (pageFails.get(`${notePath}#${p}`) ?? 0) < MAX_PAGE_FAILS,
+    );
+  }
+  const readList = readPages;
+  await mutateStore(s => {
+    const readSet = new Set(readList);
+    const doc = s.docs[notePath];
+    // Vision-owed pages DISJOINT from the read set: a page needing a re-read
+    // redoes Vision too (counted in `read`), so it is NOT also in `vision`.
+    // A page owing ONLY Vision (OCR done, Vision pending) IS counted — this is
+    // exactly what a fully-read note with a Vision backlog needs (round-7).
+    // A changed PDF passes every page in readSet → vision naturally 0.
+    let vision = 0;
+    if (doc !== undefined) {
+      const isPdf = /\.pdf$/i.test(notePath);
+      const ctx = {
+        isPdf,
+        docHash: doc.docHash ?? '',
+        docLocked: doc.lock === true,
+        pdfCovered: isPdf && (doc.docHash ?? '') !== '',
+      };
+      const total = docPageCount(s, notePath);
+      for (let p = 0; p < total; p++) {
+        if (readSet.has(p)) {
+          continue;
+        }
+        if (pageStage(doc.pages[String(p)], ctx) === 'ocr') {
+          vision++;
+        }
+      }
+    }
+    setOwed(s, notePath, {read: readList.length, vision}, now);
+  });
+};
+
 export const autoTranscriptTick = async (
   deps: CaptureDeps,
   opts?: {
@@ -481,7 +511,7 @@ export const autoTranscriptTick = async (
   }
   running = true;
   // Hoisted out of the try so the finally can settle the session counter.
-  let paidThisTick = 0;
+  let pagesRead = 0;
   let attended = false; // user-ordered work (sync / its backlog): uncapped
   let completedNormally = false;
   lastTickAt = now;
@@ -523,15 +553,7 @@ export const autoTranscriptTick = async (
     // Consume-once (audit 9 #4): the flag is taken HERE and re-armed only
     // by a normal tick end that still drains — an early return (offline,
     // exception) can no longer leave it stale and disable the cap.
-    // Round 10 #2: manualWanted.size alone must NOT make every tick
-    // attended — one stuck order would disable the cap for the whole
-    // session (and it persists). Instead the flag is re-armed at boot
-    // (hydrateManualWanted) and then lives ONLY while the backlog actually
-    // progresses; a stuck order stops draining and the cap re-engages.
     attended = opts?.trigger === 'sync' || userBacklog;
-    const fromHydratedOrder =
-      attended && hydratedOrder && opts?.trigger !== 'sync';
-    hydratedOrder = false;
     userBacklog = false;
     if (attended) {
       capLogged = false;
@@ -554,27 +576,6 @@ export const autoTranscriptTick = async (
     const ks = await getApiKey();
     const key = ks.key;
     const tracked = await resolveTrackedNotes(autoTargets);
-    // Round 13 #2: a Sync-now order whose doc left Manual mode is STALE —
-    // pruned HERE, before any spending decision, not after the drain
-    // already used it to open the cap gate. Round 14 #4 (amended in
-    // self-review): absence from `tracked` is NEVER proof — the folder
-    // walk swallows listDir failures, and readFileSize's null covers
-    // transient errors too. Only an explicit mode change prunes; an order
-    // for a vanished file just sits inert (its doc is never processed, so
-    // it can neither spend nor open any gate) until a real signal.
-    {
-      let pruned = false;
-      for (const p of [...manualWanted]) {
-        const t0 = tracked.get(p);
-        if (t0 !== undefined && t0.mode !== 'manual') {
-          manualWanted.delete(p);
-          pruned = true;
-        }
-      }
-      if (pruned) {
-        persistManualWanted(); // one write, coalesced (round 14 #8)
-      }
-    }
 
     // Flush the note currently being written. An IN-PLACE edit does NOT
     // change the page count, so ensureNoteFresh (which only saves on a count
@@ -635,22 +636,16 @@ export const autoTranscriptTick = async (
       );
     }
 
-    let pagesRead = 0;
     let checked = 0;
     let postponed = 0;
     // Paid work is allowed when the store can keep the result AND, for
     // UNATTENDED work only, the session backstop still has room (the free
     // structural pass runs regardless — round 5 #8/#10).
     const capReached = (): boolean => {
-      // The user's own work is never capped — but "the user" means a tap in
-      // THIS session. A standing order restored at boot re-armed `attended`
-      // at every plugin start, so each restart granted one uncapped tick
-      // (release audit). The first fix CANCELLED such orders, which
-      // destroyed legitimate ones whenever a tick innocently read nothing —
-      // no render host, offline, everything already covered (verification
-      // pass 2026-08-12). The order is left alone; it simply no longer
-      // switches the runaway backstop off.
-      if (attended && !fromHydratedOrder) {
+      // The user's own work is never capped: an explicit sync (attended), and
+      // its drain-continue ticks (userBacklog → attended), run uncapped. Only
+      // UNATTENDED background reads count toward the runaway backstop.
+      if (attended) {
         return false;
       }
       const hit = sessionPaidPages + pagesRead >= MAX_PAGES_PER_SESSION_BLOCK;
@@ -664,18 +659,7 @@ export const autoTranscriptTick = async (
       }
       return hit;
     };
-    // Round 11 #5: the user's persisted Sync-now order is PER DOCUMENT.
-    // Whatever happened to the session flags (a stalled order resuming on
-    // a background tick after connectivity returns), spending for a doc
-    // the user explicitly ordered is never capped — only degraded blocks.
-    const mayPayFor = (path: string): boolean =>
-      !degraded && (manualWanted.has(path) || !capReached());
-    // v0.87: docs whose STRUCTURAL debt is known clear after this tick
-    // (stamp-skip "unchanged", or fully covered this pass) — the manualWanted
-    // sweep below only releases a wanted doc from this set (and only once its
-    // Vision debt is gone too).
-    const coveredThisTick = new Set<string>();
-    let wantedDirty = false;
+    const mayPay = (): boolean => !degraded && !capReached();
     // v0.87.4 probe outcome: once a note read aborts on renders (host can't
     // render notes right now), the remaining notes stand down for this tick.
     let noteRenderDead = false;
@@ -714,17 +698,6 @@ export const autoTranscriptTick = async (
       if (opts?.modeFilter !== undefined && target.mode !== opts.modeFilter) {
         continue;
       }
-      // v0.87: an explicit manual sync REGISTERS the order — it persists
-      // until the doc's debt (Vision included) is gone, so an interrupted /
-      // chunked / wrong-host "Sync now" finishes by itself later.
-      if (
-        trigger === 'sync' &&
-        target.mode === 'manual' &&
-        !manualWanted.has(notePath)
-      ) {
-        manualWanted.add(notePath);
-        wantedDirty = true;
-      }
       // v0.87.4 (user: "le plugin doit s'adapter tout seul"): the host HINT
       // (getCurrentFilePath) reflects which app last INVOKED the plugin —
       // not what is on screen — and goes stale when the user switches apps
@@ -736,36 +709,38 @@ export const autoTranscriptTick = async (
       // The next tick re-probes: that is the "ping" that keeps the plugin
       // adaptive at ≤3 free renders per 20 s.
       const isCurrent = notePath === currentPath;
+      // The ONE bypass shared by every skip gate below (byte-size + footer
+      // stamp), defined ONCE so a future gate can't forget a guard — the class
+      // of bug that had each audit bolt the storePending/deepRecheck guard onto
+      // one gate at a time (v0.52, round-4, redesign audit). A note is always
+      // PROCESSED (never skipped) when: the user asked for a deep re-check, it
+      // is the note open on screen, or the STORE shows it incomplete (entries
+      // lost to remap/evict/Clear after a stamp — v0.52 phantom-backlog fix).
+      const forceProcess =
+        opts?.deepRecheck === true || isCurrent || storePending.has(notePath);
       // v0.88.3 perf (append-only format): same byte size as when this note
-      // was last seen fully covered, and the store agrees → nothing to do,
-      // zero IO. Any flushed edit grows the file and reopens the gate.
+      // was last seen clean, and the store knows it → nothing to do, zero IO.
+      // Any flushed edit grows the file and reopens the gate. `trigger==='sync'`
+      // reopens it too: an explicit user sync re-verifies via the footer below
+      // rather than trusting the byte cache (`force` alone — internal pokes —
+      // does not, or it would undo the optimisation, round 2 #7).
       if (isNotePath(notePath)) {
         const sz = walkSizes.get(notePath);
         if (
-          !opts?.deepRecheck &&
-          // Only an explicit user sync reopens the gate. `force` alone is
-          // set by every internal poke (drain-continue, foreground-done,
-          // app-active), which would undo the optimisation (round 2 #7).
+          !forceProcess &&
           opts?.trigger !== 'sync' &&
-          !isCurrent &&
           sz !== undefined &&
           sizeAtSkip.get(notePath) === sz &&
-          storeKnown.has(notePath) &&
-          !storePending.has(notePath)
+          storeKnown.has(notePath)
         ) {
-          coveredThisTick.add(notePath);
           continue;
         }
       }
       // A background pass never PAYS for 'manual' targets — but their FREE
       // structural refresh runs anyway (user flow decision 2026-07-18: a
       // changed Manual note must show its fresh "N to read" without any
-      // button; only the Mistral calls wait for Sync). Exception (v0.87): a
-      // doc under a standing "Sync now" order (manualWanted) is paid-allowed.
-      const freeOnly =
-        trigger === 'background' &&
-        target.mode === 'manual' &&
-        !manualWanted.has(notePath);
+      // button; only the Mistral calls wait for Sync).
+      const freeOnly = trigger === 'background' && target.mode === 'manual';
 
       // PDF target (Phase 3b): no footer/PAGEID structure. A cloud engine
       // pre-reads the WHOLE PDF in one /v1/ocr call (readPdf self-gates via
@@ -774,7 +749,7 @@ export const autoTranscriptTick = async (
       // document, so background pre-read isn't possible — it's read on demand
       // when you open the PDF.
       if (!isNotePath(notePath)) {
-        if (freeOnly || !mayPayFor(notePath)) {
+        if (freeOnly || !mayPay()) {
           continue; // a PDF has no free structural scan
         }
         if (key === null) {
@@ -808,7 +783,6 @@ export const autoTranscriptTick = async (
         if (hashMatch) {
           if (pendingVisionPages(pdfStore, notePath).length === 0) {
             console.log('[SmartNoteAI.auto]', `${name}: PDF unchanged → skip`);
-            coveredThisTick.add(notePath);
             continue;
           }
           // v0.87.4: Vision-only debt is the DRAIN's job exclusively — it
@@ -871,12 +845,8 @@ export const autoTranscriptTick = async (
           pdfFails.delete(notePath); // progress clears the backoff
         }
         pagesRead += r.read;
-        paidThisTick = pagesRead;
         if (r.read > 0 && target.mode === 'auto') {
           recordAutoSync(name, r.read);
-        }
-        if (r.ok && canRenderPdf && r.failed.length === 0) {
-          coveredThisTick.add(notePath); // OCR + Vision both landed
         }
         console.log(
           '[SmartNoteAI.auto]',
@@ -910,15 +880,8 @@ export const autoTranscriptTick = async (
       // "Sync now" re-walk the whole Manual library — minutes of bridge IO
       // to read 2 pages, the plugin frozen meanwhile).
       const stamp = getStamp(await loadStore(), notePath);
-      if (
-        !opts?.deepRecheck &&
-        !isCurrent &&
-        sig.length > 0 &&
-        stamp === sig &&
-        !storePending.has(notePath)
-      ) {
+      if (!forceProcess && sig.length > 0 && stamp === sig) {
         console.log('[SmartNoteAI.auto]', `${name}: unchanged → skip`);
-        coveredThisTick.add(notePath);
         {
           const sz = walkSizes.get(notePath);
           if (sz !== undefined) {
@@ -934,7 +897,22 @@ export const autoTranscriptTick = async (
         );
       }
       if (freeOnly) {
-        if (sig.length > 0 && manualSeenSig.get(notePath) === sig) {
+        if (
+          sig.length > 0 &&
+          manualSeenSig.get(notePath) === sig &&
+          // Like the byte-size and stamp gates, this fast-skip must NOT fire
+          // when the store shows the doc incomplete — a note that lost entries
+          // (evict / remap / Clear) after owed was written would be skipped
+          // without refreshing owed, and the free-path recordOwed below never
+          // runs → owed stays stale-low and the frame under-reports.
+          !storePending.has(notePath) &&
+          // Round-4 audit: nor when owed was INVALIDATED (upsertPage clears it —
+          // the Vision drain, a chat read, a re-read) since it was last written.
+          // The structural fallback cannot see an in-place edit (pageStage does
+          // not compare footer revs), so a wiped owed must be recomputed here,
+          // not skipped. owed defined ⇒ it is fresh (any write clears it).
+          getOwed(await loadStore(), notePath) !== null
+        ) {
           continue; // manual note unchanged since its last free refresh
         }
         manualSeenSig.set(notePath, sig);
@@ -957,18 +935,21 @@ export const autoTranscriptTick = async (
 
       if (freeOnly) {
         // Manual + background: the store snapshot above refreshed the
-        // structural counts — and since v0.53 the FREE stale count too
-        // (footer revs vs stored entries), so an in-place edit finally
-        // shows up as "to sync". The paid read waits for a Sync button.
+        // structural counts, so an in-place edit finally shows up as "to
+        // sync". The paid read waits for a Sync button. Record the
+        // authoritative owed count from the fresh pagesNeedingRead.
         try {
           const totalM = await notePageCount(deps, notePath);
           if (totalM > 0) {
-            const needM = await pagesNeedingRead(
-              deps,
-              notePath,
-              Array.from({length: totalM}, (_, i) => i),
+            const wantedM = Array.from({length: totalM}, (_, i) => i);
+            const needM = await pagesNeedingRead(deps, notePath, wantedM);
+            // Exclude pages parked by the per-page failure backoff — the read
+            // loop and Sync-now permanently drop them, so owed must too, else it
+            // shows an "N to sync" Sync-now can't clear (redesign audit).
+            const readablePages = needM.filter(
+              pp => (pageFails.get(`${notePath}#${pp}`) ?? 0) < MAX_PAGE_FAILS,
             );
-            manualStale.set(notePath, needM.length);
+            await recordOwed(deps, notePath, wantedM, readablePages);
           }
         } catch {
           // keep the previous count
@@ -987,7 +968,7 @@ export const autoTranscriptTick = async (
       if (
         hostKind !== 'note' &&
         opts?.force !== true &&
-        Date.now() - lastNoteProbeFailAt < PROBE_RETRY_MS
+        Date.now() < renderBlockedUntil.note
       ) {
         continue; // cross-host probe failed <60 s ago — no re-render yet
       }
@@ -1075,10 +1056,9 @@ export const autoTranscriptTick = async (
       const todo = needed.slice(0, Math.max(0, budget));
       postponed += needed.length - todo.length;
       let noteOk = true; // did every attempted page actually land?
-      let failedCount = 0;
       // The free structural pass above already ran for this note; only the
       // PAID read is gated by the backstop / degraded store.
-      if (todo.length > 0 && mayPayFor(notePath)) {
+      if (todo.length > 0 && mayPay()) {
         const r = await readNotePages(
           deps,
           key,
@@ -1093,15 +1073,13 @@ export const autoTranscriptTick = async (
           reason: 'read failed',
         }));
         pagesRead += r.read;
-        paidThisTick = pagesRead;
         if (r.read > 0 && target.mode === 'auto') {
           recordAutoSync(name, r.read);
         }
         noteOk = r.ok;
-        failedCount = r.failed.length;
         if ((r as {renderAborted?: boolean}).renderAborted === true) {
           noteRenderDead = true; // stand the other notes down for this tick
-          lastNoteProbeFailAt = Date.now();
+          blockRender('note', Date.now());
         }
         if (
           isCurrent &&
@@ -1160,31 +1138,30 @@ export const autoTranscriptTick = async (
       if (fullyCovered && sig.length > 0) {
         await mutateStore(s => setStamp(s, notePath, sig));
       }
-      // Keep the FREE stale counter honest after a PAID pass (audit
-      // 2026-07-19 E1): "Sync now" never purged manualStale, and the
-      // light pass skips its recompute while the footer signature is
-      // unchanged (manualSeenSig) — so "N to sync · ~X €" kept showing
-      // pages already paid for, forever.
-      // The purge runs for EVERY mode (device report 2026-07-19 evening:
-      // a note that had been Manual kept its stale count while AUTO —
-      // pages read and stored, the frame still said "N to read").
       if (fullyCovered) {
-        manualStale.delete(notePath);
         manualSeenSig.delete(notePath); // next free pass recounts fresh
-        coveredThisTick.add(notePath);
         const szc = walkSizes.get(notePath);
         if (szc !== undefined) {
           sizeAtSkip.set(notePath, szc);
         }
       }
-      if (target.mode === 'manual') {
-        if (!fullyCovered && todo.length > 0) {
-          manualStale.set(
-            notePath,
-            needed.length - todo.length + failedCount,
-          );
-        }
-      }
+      // The ONE owed writer (redesign 2026-08-14): a FRESH pagesNeedingRead
+      // over the just-updated store, so "N to sync" is exactly what a
+      // subsequent Sync-now would read. Replaces manualStale, whose conditional
+      // write/clear went stale — the "N to sync that Sync-now can't clear" class.
+      // When the note is fullyCovered we KNOW the READ leg is done: pass an EMPTY
+      // read list so owed.read=0 directly — a transient pagesNeedingRead failure
+      // in recordOwed (which then keeps the last count) can't leave a covered
+      // note stuck at a stale-HIGH owed that the stamp-skip locks in forever.
+      // recordOwed still derives the DISJOINT vision from that empty read set, so
+      // OCR-only pages awaiting Vision remain visible (round-7 audit: passing 0
+      // there hard-set vision=0 and hid the Vision backlog).
+      await recordOwed(
+        deps,
+        notePath,
+        wanted,
+        fullyCovered ? [] : undefined,
+      );
     }
     // v0.87 Vision drain — "no OCR-only page left behind" (user rule
     // 2026-07-30): finish the Vision leg of every stored OCR-only page the
@@ -1207,21 +1184,17 @@ export const autoTranscriptTick = async (
     const allowNote =
       hostKind === 'note' ||
       opts?.force === true ||
-      nowP - lastNoteProbeFailAt >= PROBE_RETRY_MS;
+      nowP >= renderBlockedUntil.note;
     const allowPdf =
       hostKind === 'pdf' ||
       opts?.force === true ||
-      nowP - lastPdfProbeFailAt >= PROBE_RETRY_MS;
+      nowP >= renderBlockedUntil.pdf;
     if (
       key !== null &&
       visionBudget > 0 &&
       (allowNote || allowPdf) &&
-      // Round 12 #0: the drain must still ENTER when a persisted Sync-now
-      // order has Vision debt, or the per-doc bypass in the pageFilter is
-      // unreachable and the user's order stalls at the cap for the whole
-      // session. The pageFilter then caps everything non-manual.
       !degraded &&
-      (manualWanted.size > 0 || !capReached()) &&
+      !capReached() &&
       !stopRequested() &&
       !isForegroundBusy()
     ) {
@@ -1238,7 +1211,7 @@ export const autoTranscriptTick = async (
           onProgress: (done, totalV) =>
             setActivity({label: 'Vision', done, total: totalV}),
           pageFilter: (path, page) =>
-            (manualWanted.has(path) || !capReached()) &&
+            !capReached() &&
             (visionFails.get(`${path}#${page}`) ?? 0) < MAX_PAGE_FAILS &&
             !(
               trigger === 'background' &&
@@ -1258,7 +1231,6 @@ export const autoTranscriptTick = async (
       ).catch(() => null);
       if (fv !== null) {
         pagesRead += fv.read;
-        paidThisTick = pagesRead;
         visionTruncated = fv.truncated;
         if (fv.read > 0 || fv.pending > 0) {
           console.log(
@@ -1281,10 +1253,10 @@ export const autoTranscriptTick = async (
           pdfAttempted?: boolean;
         };
         if (fb.noteBlocked === true) {
-          lastNoteProbeFailAt = Date.now();
+          blockRender('note', Date.now());
         }
         if (fb.pdfBlocked === true) {
-          lastPdfProbeFailAt = Date.now();
+          blockRender('pdf', Date.now());
         }
         // Only a pass that actually ATTEMPTED PDFs may move this flag
         // (review 2026-08-01 #6: a note-only pass cleared it, so the
@@ -1295,27 +1267,6 @@ export const autoTranscriptTick = async (
           pdfVisionBlocked = fb.pdfBlocked === true;
         }
       }
-    }
-    // v0.87: release the "Sync now" orders that are DONE — structural debt
-    // clear this tick AND no Vision pending any more. Orders for docs no
-    // longer tracked as Manual (mode changed, file gone) are dropped too.
-    if (manualWanted.size > 0) {
-      const s2 = await loadStore();
-      for (const p of [...manualWanted]) {
-        // (Staleness pruning happens at tick start, walk-failure-proof —
-        // round 14 #9: this sweep only RELEASES completed orders.)
-        if (coveredThisTick.has(p) && pagesOwedVision(s2, p).length === 0) {
-          console.log(
-            '[SmartNoteAI.auto]',
-            `${p.split('/').pop()}: Sync-now order complete → released`,
-          );
-          manualWanted.delete(p);
-          wantedDirty = true;
-        }
-      }
-    }
-    if (wantedDirty) {
-      persistManualWanted();
     }
     if (pagesRead > 0) {
       await flushStore();
@@ -1360,7 +1311,7 @@ export const autoTranscriptTick = async (
       userBacklog = true;
     }
     if (!attended) {
-      sessionPaidPages += paidThisTick; // only unattended work counts
+      sessionPaidPages += pagesRead; // only unattended work counts
     }
     setActivity(null);
     running = false;
@@ -1455,7 +1406,6 @@ const firePoke = (why: string, opts: PokeOpts): void => {
 export const startAutoScheduler = (deps: CaptureDeps): void => {
   schedDeps = deps;
   hydrateRecentAutoSyncs().catch(() => {});
-  hydrateManualWanted().catch(() => {});
   if (periodic === null) {
     periodic = setInterval(() => {
       autoTranscriptTick(deps).catch(() => {});

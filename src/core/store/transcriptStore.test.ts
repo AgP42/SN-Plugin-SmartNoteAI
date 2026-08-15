@@ -4,6 +4,12 @@ import {
   isPageLocked,
   setPageLock,
   sanitizeDocEntry,
+  getOwed,
+  setOwed,
+  docPending,
+  invalidateOwed,
+  takeTouchedDocs,
+  removePages,
   type Store,
   setDocLock,
   isDocLocked,
@@ -400,19 +406,33 @@ describe('structural tracking (v0.23): pageIds, stamp, low words', () => {
     ).toBe(false);
   });
 
-  it('docsSummary splits ocrOnly vs visionDone by page source (v0.68 pipeline)', () => {
+  it('docsSummary stage tally: queued / ocrPending / visioned (unified 2026-08-12)', () => {
     const s = emptyStore();
-    // Two pages still at OCR (awaiting vision), two past vision, one blank
-    // OCR (no text → counts as neither), one hand-corrected (past vision).
+    // Two pages still at OCR (awaiting vision), two past vision, one blank OCR
+    // (read + negative-cached → DONE, not pending). No never-read pages here.
     upsertPage(s, '/n.note', 0, entry('a', {source: 'mistral-ocr'}), 1);
     upsertPage(s, '/n.note', 1, entry('b', {source: 'mistral-ocr'}), 1);
     upsertPage(s, '/n.note', 2, entry('c', {source: 'medium'}), 1);
     upsertPage(s, '/n.note', 3, entry('d', {source: 'user'}), 1);
     upsertPage(s, '/n.note', 4, entry('', {source: 'mistral-ocr'}), 1);
     const d = docsSummary(s).find(x => x.path === '/n.note');
-    expect(d?.ocrOnly).toBe(2); // pages 0,1 — the "→ vision" backlog
-    expect(d?.visionDone).toBe(2); // pages 2,3 — "up to date"
+    expect(d?.ocrPending).toBe(2); // pages 0,1 — the "→ vision" backlog
+    expect(d?.visioned).toBe(3); // pages 2,3 (vision) + 4 (blank, done)
+    expect(d?.queued).toBe(0); // every structural page has an entry
     expect(d?.pages).toBe(4); // non-empty transcripts (blank page 4 excluded)
+  });
+
+  it('docsSummary: a vision-SETTLED OCR page counts as done, not ocrPending', () => {
+    const s = emptyStore();
+    setPageIds(s, '/n.note', ['P1', 'P2']);
+    // Page 0: OCR text, vision ran and had nothing to add (va = rev) → done.
+    upsertPage(s, '/n.note', 0, entry('x', {source: 'mistral-ocr', rev: 'r0', va: 'r0'}), 1);
+    // Page 1: OCR text, no va → genuinely awaiting vision.
+    upsertPage(s, '/n.note', 1, entry('y', {source: 'mistral-ocr', rev: 'r1'}), 1);
+    const d = docsSummary(s).find(x => x.path === '/n.note');
+    expect(d?.ocrPending).toBe(1); // only page 1
+    expect(d?.visioned).toBe(1); // page 0 settled
+    expect(d?.queued).toBe(0);
   });
 
   it('round-trips low-confidence words and drops malformed ones', () => {
@@ -780,5 +800,135 @@ describe('limbo (v1.0.1: remap drops stay adoptable)', () => {
     upsertPage(s, '/n/src.note', 1, {text: '   ', source: 'mistral-ocr', at: 1, hash: 'P20260101000000004'}, 1);
     remapDocPages(s, '/n/src.note', []);
     expect(limboSize()).toBe(0);
+  });
+});
+
+// Sync-count redesign 2026-08-14: doc.owed is the ONE authoritative count.
+describe('doc.owed set/get + sanitize (redesign 2026-08-14)', () => {
+  it('setOwed writes and getOwed reads back, clamping negatives/floats', () => {
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, entry('x'), 1);
+    setOwed(s, '/a.note', {read: 2.9, vision: -1}, 5);
+    expect(getOwed(s, '/a.note')).toEqual({read: 2, vision: 0});
+  });
+
+  it('upsertPage INVALIDATES owed — any entry write clears the engine count', () => {
+    // Redesign audit 2026-08-14: owed is the engine's authoritative read count,
+    // but chat / re-read / the Vision drain also persist entries. Clearing owed
+    // at THE store write means no writer can leave it stale-HIGH; the UI falls
+    // back to the structural count until the next engine pass rewrites owed.
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, entry('x'), 1);
+    setOwed(s, '/a.note', {read: 3, vision: 0}, 5);
+    expect(getOwed(s, '/a.note')?.read).toBe(3);
+    upsertPage(s, '/a.note', 1, entry('y'), 6); // a paid read persists a page
+    expect(getOwed(s, '/a.note')).toBeNull(); // owed invalidated
+  });
+
+  it('setOwed is a no-op for an unknown doc', () => {
+    const s = emptyStore();
+    setOwed(s, '/missing.note', {read: 3, vision: 0}, 1);
+    expect(getOwed(s, '/missing.note')).toBeNull();
+  });
+
+  // docPending: the ONE selection shared by the SYNC bar, the frame and the
+  // tree (extracted 2026-08-15) so they can never drift.
+  it('docPending prefers owed, falls back to structural, and clamps to total', () => {
+    // owed present → owed wins over structural.
+    expect(docPending({read: 2, vision: 3}, {queued: 9, ocrPending: 9}, 5)).toEqual({
+      read: 2,
+      vision: 3,
+    });
+    // owed absent → structural queue/ocrPending.
+    expect(docPending(undefined, {queued: 1, ocrPending: 2}, 4)).toEqual({
+      read: 1,
+      vision: 2,
+    });
+    // clamp: read+vision can never exceed total (stale owed can't break the partition).
+    expect(docPending({read: 99, vision: 99}, {queued: 0, ocrPending: 0}, 3)).toEqual({
+      read: 3,
+      vision: 0,
+    });
+  });
+
+  // owed-lifecycle audit 2026-08-14: owed is a cache derived from the doc's
+  // pages; setOwed must PERSIST (mark touched) and every page-set/marker
+  // mutation outside upsertPage must INVALIDATE it (else it goes stale-HIGH).
+  it('setOwed marks the doc touched so the IO layer persists the write', () => {
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, entry('x'), 1);
+    takeTouchedDocs(); // drain the setup's touch
+    setOwed(s, '/a.note', {read: 2, vision: 0}, 5);
+    expect(takeTouchedDocs()).toContain('/a.note'); // the SET is durable
+  });
+
+  it('invalidateOwed clears owed and marks touched, but only when owed was set', () => {
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, entry('x'), 1);
+    setOwed(s, '/a.note', {read: 2, vision: 0}, 5);
+    takeTouchedDocs(); // drain
+    invalidateOwed(s, '/a.note');
+    expect(getOwed(s, '/a.note')).toBeNull();
+    expect(takeTouchedDocs()).toContain('/a.note'); // the CLEAR is durable too
+    invalidateOwed(s, '/a.note'); // idempotent: nothing to clear
+    expect(takeTouchedDocs()).not.toContain('/a.note');
+  });
+
+  it('a partial Clear-transcript (one locked page) invalidates a stale owed', () => {
+    // A fully-synced note carries owed={read:0,vision:0}. Clearing it with one
+    // locked page drops the unlocked entries — owed must NOT survive as {0,0}
+    // or the tree shows ✓✓ over pages that now owe a full paid re-read.
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, {text: 'keep', source: 'user', at: 1, hash: 'h0', lock: true}, 1);
+    upsertPage(s, '/a.note', 1, entry('drop'), 1);
+    setOwed(s, '/a.note', {read: 0, vision: 0}, 5);
+    const r = clearDocRespectingLocks(s, '/a.note');
+    expect(r.changed).toBe(true);
+    expect(getOwed(s, '/a.note')).toBeNull();
+  });
+
+  it('removePages invalidates owed for the surviving doc', () => {
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, entry('a'), 1);
+    upsertPage(s, '/a.note', 1, entry('b'), 1);
+    setOwed(s, '/a.note', {read: 0, vision: 0}, 5);
+    removePages(s, '/a.note', [1]);
+    expect(getOwed(s, '/a.note')).toBeNull();
+  });
+
+  it('setPageLock invalidates owed — lock feeds pageNeedsRead/pageStage', () => {
+    // Locking an OCR-only page awaiting Vision makes it structurally 'finished';
+    // a stale owed.vision=1 would show a permanent phantom "✓ vision…" with no
+    // recompute path (the drain skips locked pages, the tick skip-gates the doc).
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    setOwed(s, '/a.note', {read: 0, vision: 1}, 5);
+    setPageLock(s, '/a.note', 0, true);
+    expect(getOwed(s, '/a.note')).toBeNull();
+  });
+
+  it('setDocLock invalidates owed for the whole doc', () => {
+    const s = emptyStore();
+    upsertPage(s, '/a.note', 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    setOwed(s, '/a.note', {read: 0, vision: 1}, 5);
+    setDocLock(s, '/a.note', true);
+    expect(getOwed(s, '/a.note')).toBeNull();
+  });
+
+  it('sanitizeDocEntry round-trips a valid owed and drops a malformed one', () => {
+    const good = sanitizeDocEntry({
+      pages: {},
+      usedAt: 1,
+      docHash: '',
+      owed: {read: 4, vision: 1, at: 9},
+    });
+    expect(good?.owed).toEqual({read: 4, vision: 1, at: 9});
+    const bad = sanitizeDocEntry({
+      pages: {},
+      usedAt: 1,
+      docHash: '',
+      owed: {read: 'nope', vision: 1},
+    });
+    expect(bad?.owed).toBeUndefined(); // malformed → dropped, doc still valid
   });
 });

@@ -2,5 +2,5 @@
 // any bug report needs. Kept in step with PluginConfig.json by a test that
 // reads both and fails if they diverge — so a release bump cannot silently
 // leave this behind.
-export const APP_VERSION = '1.0.12';
-export const APP_VERSION_CODE = '321';
+export const APP_VERSION = '1.0.18';
+export const APP_VERSION_CODE = '327';

@@ -11,9 +11,8 @@
 import type {CaptureDeps} from './capture';
 import {
   autoTranscriptTick,
+  recordOwed,
   MAX_PAGES_PER_TICK,
-  getManualStale,
-  setManualStale,
   getLastSyncAt,
   startAutoScheduler,
   pokeAuto,
@@ -36,6 +35,8 @@ import {
   setStamp,
   setPageIds,
   setDocHash,
+  getOwed,
+  upsertPage,
   type Store,
 } from '../core/store/transcriptStore';
 
@@ -70,7 +71,6 @@ jest.mock('./reading', () => ({
     return m !== null ? Number(m[1]) : 0;
   },
   pendingVisionPages: jest.fn(() => []),
-  pagesOwedVision: jest.fn(() => []),
   finishVisionLive: jest.fn(async () => ({
     read: 0,
     pending: 0,
@@ -428,24 +428,93 @@ describe('autoTranscriptTick scheduling', () => {
   });
 });
 
-describe('manualStale after a paid pass (audit 2026-07-19 E1)', () => {
-  it('a Sync covering the whole manual backlog PURGES the stale counter', async () => {
+// Sync-count redesign 2026-08-14: the engine records doc.owed = a FRESH
+// pagesNeedingRead after the pass, so the count IS what a subsequent Sync-now
+// would read — it can never drift (the "N to sync that Sync-now can't clear"
+// class). needMock returns the read decision first, then the post-read residual.
+describe('doc.owed after a paid pass (sync-count redesign)', () => {
+  it('a Sync covering the whole backlog records owed.read = 0', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, ['P1', 'P2', 'P3']); // doc exists, 3 pages
     settingsMock.mockResolvedValue({autoTargets: {[NOTE]: {mode: 'manual'}}});
-    setManualStale(NOTE, 2);
-    needMock.mockResolvedValue([0, 1]);
-    readMock.mockResolvedValue({ok: true, read: 2, failed: []});
+    needMock.mockResolvedValueOnce([0, 1, 2]); // read decision: 3 needed
+    needMock.mockResolvedValue([]); // …all read → nothing left (recordOwed)
+    readMock.mockResolvedValue({ok: true, read: 3, failed: []});
     await autoTranscriptTick(deps(), {trigger: 'sync'});
-    // "N to sync · ~X €" used to keep showing pages already paid for.
-    expect(getManualStale().has(NOTE)).toBe(false);
+    expect(getOwed(s, NOTE)?.read).toBe(0); // Sync-now would read nothing now
   });
 
-  it('a PARTIAL paid pass leaves the honest residual count', async () => {
+  it('a free tick RE-RUNS owed after a write invalidated it (round-4 audit)', async () => {
+    const s = storeState.store;
+    // 3 pages all with entries → total-read=0 → NOT storePending.
+    const pe = (t: string) => ({text: t, source: 'medium' as const, at: 1, hash: ''});
+    upsertPage(s, NOTE, 0, pe('a'), 1);
+    upsertPage(s, NOTE, 1, pe('b'), 1);
+    upsertPage(s, NOTE, 2, pe('c'), 1);
     settingsMock.mockResolvedValue({autoTargets: {[NOTE]: {mode: 'manual'}}});
-    setManualStale(NOTE, 2);
-    needMock.mockResolvedValue([0, 1]);
-    readMock.mockResolvedValue({ok: false, read: 1, failed: [1]});
+    needMock.mockResolvedValue([]); // fully read → owed.read = 0
+    await autoTranscriptTick(deps()); // free/background: writes owed=0, sets seenSig
+    expect(getOwed(s, NOTE)?.read).toBe(0);
+    // A chat read / the Vision drain persists a page → upsertPage clears owed.
+    upsertPage(s, NOTE, 0, pe('a2'), 2);
+    expect(getOwed(s, NOTE)).toBeNull();
+    // Next free tick: footer sig unchanged, not storePending — but owed was
+    // wiped, so the fast-skip must NOT fire; recordOwed re-establishes it.
+    nowMs += 60_000;
+    await autoTranscriptTick(deps());
+    expect(getOwed(s, NOTE)?.read).toBe(0); // recomputed, not left undefined
+  });
+
+  it('recordOwed makes vision DISJOINT from read (edited OCR page → read only)', async () => {
+    // Round-6 audit: an OCR-only page (Vision pending) edited in place needs a
+    // full re-read (owed.read), which redoes Vision too — so it must NOT also
+    // count in owed.vision. Page 0 = OCR-only AND flagged for read; page 1 =
+    // OCR-only, NOT flagged. Expect read=1 (page 0), vision=1 (page 1 only).
+    const s = storeState.store;
+    upsertPage(s, NOTE, 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    upsertPage(s, NOTE, 1, {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    needMock.mockResolvedValue([0]); // only page 0 needs a re-read
+    await recordOwed(deps(), NOTE, [0, 1]);
+    const o = getOwed(s, NOTE);
+    expect(o?.read).toBe(1); // page 0
+    expect(o?.vision).toBe(1); // page 1 only — page 0 is NOT double-counted
+  });
+
+  it('a fully-read note (empty read list) still surfaces its Vision backlog', async () => {
+    // Round-7 audit: the precomputed path once hard-set owed.vision=0, so a note
+    // whose READ leg is done but whose OCR-only pages still owe Vision showed as
+    // ✓✓ (canSync=false, Vision unreachable). An EMPTY precomputed read list must
+    // still derive the DISJOINT vision from the store — here 2 OCR-only pages.
+    const s = storeState.store;
+    upsertPage(s, NOTE, 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    upsertPage(s, NOTE, 1, {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    await recordOwed(deps(), NOTE, [0, 1], []); // read leg done
+    const o = getOwed(s, NOTE);
+    expect(o?.read).toBe(0);
+    expect(o?.vision).toBe(2); // both OCR-only pages still owe Vision
+  });
+
+  it('a whole-doc re-read (full read list) subsumes Vision → owed.vision=0', async () => {
+    // The changed-PDF path passes EVERY page as the read set; since a full re-read
+    // redoes Vision too, no page owes Vision separately.
+    const s = storeState.store;
+    upsertPage(s, NOTE, 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    upsertPage(s, NOTE, 1, {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    await recordOwed(deps(), NOTE, [0, 1], [0, 1]); // every page re-read
+    const o = getOwed(s, NOTE);
+    expect(o?.read).toBe(2);
+    expect(o?.vision).toBe(0); // subsumed by the full re-read
+  });
+
+  it('a PARTIAL paid pass records the honest residual owed.read', async () => {
+    const s = storeState.store;
+    setPageIds(s, NOTE, ['P1', 'P2', 'P3']);
+    settingsMock.mockResolvedValue({autoTargets: {[NOTE]: {mode: 'manual'}}});
+    needMock.mockResolvedValueOnce([0, 1, 2]); // 3 needed
+    needMock.mockResolvedValue([2]); // page 2 failed → still owed (recordOwed)
+    readMock.mockResolvedValue({ok: false, read: 2, failed: [2]});
     await autoTranscriptTick(deps(), {trigger: 'sync'});
-    expect(getManualStale().get(NOTE)).toBe(1); // one page still owed
+    expect(getOwed(s, NOTE)?.read).toBe(1); // one page still owed
   });
 });
 
@@ -696,32 +765,33 @@ describe('poke queue & frozen-timer flush (v0.87.3)', () => {
   });
 });
 
-// v0.87 "Sync now is an order": a manual sync that could not finish keeps
-// draining on background ticks until the debt (Vision included) is gone.
-describe('manualSyncWanted (v0.87)', () => {
-  it('an interrupted manual Sync finishes on background ticks, then releases', async () => {
+// The "Sync now = standing ORDER" registry was removed 2026-08-14. A MANUAL
+// doc is read ONLY on an explicit Sync now — a background tick never pays for
+// it, whatever was left over. (What remains is shown by the Library's 4 queues;
+// the user re-taps. The Vision drain still finishes the Vision leg on its own.)
+describe('manual docs: paid ONLY on an explicit Sync now (no standing order)', () => {
+  it('an explicit Sync now pays; a later background tick does NOT', async () => {
     settingsMock.mockResolvedValue({autoTargets: {[NOTE]: {mode: 'manual'}}});
     needMock.mockResolvedValue([0, 1]);
+    // Sync now leaves page 1 unread (HTTP 429).
     readMock.mockResolvedValue({ok: false, read: 1, failed: [1], reason: 'HTTP 429'});
     await autoTranscriptTick(deps(), {
       trigger: 'sync',
       modeFilter: 'manual',
       force: true,
     });
-    expect(readMock).toHaveBeenCalledTimes(1);
+    expect(readMock).toHaveBeenCalledTimes(1); // the tap paid
 
-    // Background tick: normally free-only for manual — the order stands.
+    // A background tick with the leftover still pending: manual is free-only,
+    // so NO paid read happens on its own — no more phantom "order".
     nowMs += 60_000;
     needMock.mockResolvedValue([1]);
     readMock.mockResolvedValue({ok: true, read: 1, failed: []});
     await autoTranscriptTick(deps());
-    expect(readMock).toHaveBeenCalledTimes(2); // PAID read on a background tick
+    expect(readMock).toHaveBeenCalledTimes(1); // unchanged: background never pays manual
 
-    // Fully covered on that tick → the order was released: the next
-    // background tick is free-only again (stamp-skip, no paid read).
-    nowMs += 60_000;
-    needMock.mockResolvedValue([0]);
-    await autoTranscriptTick(deps());
+    // Re-tapping Sync now reads the remainder.
+    await autoTranscriptTick(deps(), {trigger: 'sync', modeFilter: 'manual', force: true});
     expect(readMock).toHaveBeenCalledTimes(2);
   });
 });

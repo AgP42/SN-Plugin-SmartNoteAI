@@ -91,12 +91,6 @@ export type Settings = {
   // v0.63.1: last AUTO-mode docs synced (name · epoch ms · pages), max 5,
   // newest first. ONE writer: autoTranscript (recordAutoSync).
   recentAutoSyncs?: {name: string; at: number; pages: number}[];
-  // v0.87: MANUAL docs whose sync was explicitly requested ("Sync now") and
-  // is not finished yet (chunked >100 p, offline, wrong render host…). The
-  // background tick treats them as paid-allowed until their debt — Vision
-  // included — is gone, then removes them: "Sync now" is fire-and-forget.
-  // ONE writer: autoTranscript.
-  manualSyncWanted?: string[];
   // Settings-file schema version. Since v0.58 this versions the SETTINGS
   // file only — the transcript store carries its own contentV in its
   // index.json and its lifecycle no longer hangs on this field (the old
@@ -218,14 +212,6 @@ export const sanitizeSettings = (obj: unknown): Settings => {
       .slice(0, 5);
     if (ra.length > 0) {
       s.recentAutoSyncs = ra;
-    }
-  }
-  if (Array.isArray(o.manualSyncWanted)) {
-    const mw = o.manualSyncWanted
-      .filter((p: unknown): p is string => typeof p === 'string' && p.length > 0)
-      .slice(0, 500);
-    if (mw.length > 0) {
-      s.manualSyncWanted = mw;
     }
   }
   return s;

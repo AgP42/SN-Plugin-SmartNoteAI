@@ -110,6 +110,11 @@ const TEXT_TYPES: SearchCriterionType[] = [
   'source',
   'after',
   'before',
+  // 'approx' needs the page TEXT too (full-scope audit 2026-08-12, N4): a page
+  // with no transcript can never fuzzy-match a word, so its presence must
+  // suppress the meta (unread-page) branch — otherwise `approx:x star:` listed
+  // textless starred pages that cannot contain the word.
+  'approx',
 ];
 
 // 'YYYY-MM' or 'YYYY-MM-DD' → epoch ms at UTC midnight; NaN when invalid
@@ -421,6 +426,20 @@ export const searchLibraryAdvanced = (
             if (!nameLow.includes(prep.get(c)?.p ?? '')) ok = false;
           } else if (c.type === 'folder') {
             if (!folderLow.includes(prep.get(c)?.p ?? '')) ok = false;
+          } else if (c.type === 'page') {
+            // N4 (2026-08-12): the meta branch used to DROP the page constraint,
+            // so `star: p:1` surfaced starred pages other than page 1. Apply the
+            // NUMERIC page test on the candidate page `p` (0-indexed; the user
+            // types 1-based). Regression audit: do NOT apply 'first'/'last' here
+            // — docMinPage/docMaxPage are computed over TRANSCRIBED pages only,
+            // so an UNREAD first/last page could never match them and `star:
+            // p:first` returned empty. First/last stays unconstrained for meta
+            // hits (as before the fix), which only over-includes, never hides.
+            const pv = prep.get(c);
+            if (pv?.p !== 'first' && pv?.p !== 'last') {
+              const want = pv?.want ?? NaN;
+              if (!Number.isInteger(want) || p !== want - 1) ok = false;
+            }
           }
           if (!ok) break;
         }

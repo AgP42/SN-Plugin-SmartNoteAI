@@ -257,6 +257,46 @@ describe('v0.37 criteria: type / starred / keyword / dates / meta hits', () => {
     ]);
     expect(t.map(h => h.page)).toEqual([0]);
   });
+
+  // N4 (full-scope audit 2026-08-12): the meta branch used to DROP p:/approx:.
+  it('meta hits honour p: — star: p:N filters unread pages by page number', () => {
+    // build(): Plan.note stars=[0,3], page 3 unread. p:4 = 1-based = index 3.
+    const four = searchLibraryAdvanced(build(), [
+      {type: 'starred', value: 'yes'},
+      {type: 'page', value: '4'},
+    ]);
+    expect(four.map(h => h.page)).toEqual([3]); // the unread starred page 3
+    // p:1 = index 0 (starred AND read) → the read page, and page 3 must NOT leak.
+    const one = searchLibraryAdvanced(build(), [
+      {type: 'starred', value: 'yes'},
+      {type: 'page', value: '1'},
+    ]);
+    expect(one.map(h => h.page)).toEqual([0]);
+    expect(one.map(h => h.page)).not.toContain(3);
+  });
+
+  it('approx: suppresses meta hits — a textless page can never fuzzy-match', () => {
+    const r = searchLibraryAdvanced(build(), [
+      {type: 'starred', value: 'yes'},
+      {type: 'approx', value: 'budgot'}, // ~ budget
+    ]);
+    expect(r.every(h => !h.snippet.includes('not read yet'))).toBe(true);
+    expect(r.map(h => h.page)).not.toContain(3); // the unread starred page
+  });
+
+  it('regression: star: p:first still surfaces an UNREAD starred first page', () => {
+    // Regression audit 2026-08-12: docMinPage is computed over TRANSCRIBED
+    // pages, so restricting meta hits by 'first'/'last' made an unread first
+    // starred page return EMPTY. First/last must not over-restrict meta hits.
+    const s = emptyStore();
+    upsertPage(s, '/N.note', 2, entry('some transcribed text'), 1); // page 2 read
+    s.docs['/N.note'].stars = [0]; // page 0 starred but UNREAD
+    const r = searchLibraryAdvanced(s, [
+      {type: 'starred', value: 'yes'},
+      {type: 'page', value: 'first'},
+    ]);
+    expect(r.map(h => h.page)).toContain(0); // not empty
+  });
 });
 
 describe('p: and approx: operators (v0.64)', () => {

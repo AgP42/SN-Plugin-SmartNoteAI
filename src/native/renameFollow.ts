@@ -60,15 +60,6 @@ export const followRename = async (
     }
     return patch;
   }).catch(() => undefined);
-  // The standing Sync order has ONE writer (autoTranscript) — go through
-  // it. Required LAZILY: reading.ts imports this module and autoTranscript
-  // imports reading.ts, so a top-level import would close a cycle and the
-  // binding would be undefined at module-init time.
-  (
-    require('./autoTranscript') as {
-      renameManualWanted: (a: string, b: string) => void;
-    }
-  ).renameManualWanted(from, to);
   await mutateStore(st => retireRenamedDoc(st, from, to));
   console.log(
     '[SmartNoteAI.store]',

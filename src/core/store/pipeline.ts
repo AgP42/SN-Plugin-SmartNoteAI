@@ -12,6 +12,7 @@
 //
 // Pure: Store + per-note totals in, counts out. No IO.
 import type {Store} from './transcriptStore';
+import {pageStage, docPending} from './transcriptStore';
 
 export type PipelineStages = {
   tracked: number; // total structural pages across tracked notes/PDFs
@@ -40,40 +41,38 @@ export const classifyPipeline = (
   for (const [path, info] of trackedTotals) {
     out.tracked += info.total;
     const doc = store.docs[path];
-    if (info.isPdf) {
-      // Option A: PDFs are read per page (OCR then Vision), so they carry the
-      // same three stages as notes. A page with 'mistral-ocr' text is awaiting
-      // Vision (stage 2). A page with NO entry is a text-less page (finished
-      // once the doc is covered — OCR ran and found nothing) or still queued
-      // for the first OCR pass (not covered yet).
-      for (let p = 0; p < info.total; p++) {
-        const e = doc?.pages[String(p)];
-        if (e !== undefined && e.text.trim().length > 0) {
-          if (e.source === 'mistral-ocr') {
-            out.ocrDone++;
-          } else {
-            out.finished++; // medium / improved / user
-          }
-        } else if (info.pdfCovered) {
-          out.finished++; // text-less page, OCR done
-        } else {
-          out.queue++;
-        }
-      }
-      continue;
-    }
+    // The QUEUE (paid-read) count uses the engine's authoritative owed.read
+    // when present (the same value the "N to sync" frame reads, so bar and
+    // frame agree); the OCR-DONE (vision-owed) count is ALWAYS structural
+    // (pageStage), which self-updates when the batch drain settles a page, so
+    // it can never go stale (redesign audit 2026-08-14). Clamp so a stale
+    // owed can never break the queue+ocrDone+finished == tracked partition.
+    const ctx = {
+      isPdf: info.isPdf,
+      docHash: doc?.docHash ?? '',
+      docLocked: doc?.lock === true,
+      pdfCovered: info.pdfCovered,
+    };
+    let structQueue = 0;
+    let ocr = 0;
     for (let p = 0; p < info.total; p++) {
-      const e = doc?.pages[String(p)];
-      if (e !== undefined && e.text.trim().length > 0) {
-        if (e.source === 'mistral-ocr') {
-          out.ocrDone++;
-        } else {
-          out.finished++; // medium / improved / user
-        }
-      } else {
-        out.queue++; // never read, or read-blank (negative cache)
+      const stage = pageStage(doc?.pages[String(p)], ctx);
+      if (stage === 'ocr') {
+        ocr++;
+      } else if (stage === 'queue') {
+        structQueue++;
       }
     }
+    // The SAME selection computeSyncFrame uses (docPending), so bar and frame can
+    // never disagree: queue = read, ocrDone = vision, finished = the rest.
+    const {read, vision} = docPending(
+      doc?.owed,
+      {queued: structQueue, ocrPending: ocr},
+      info.total,
+    );
+    out.queue += read;
+    out.ocrDone += vision;
+    out.finished += Math.max(0, info.total - read - vision);
   }
   return out;
 };

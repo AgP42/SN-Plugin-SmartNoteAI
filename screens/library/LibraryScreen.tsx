@@ -25,6 +25,7 @@ import {
   getPage,
   pagesOfDoc,
   docPageCount,
+  docPending,
   getDocHash,
   type DocSummary,
   type LowWord,
@@ -39,8 +40,9 @@ import {
 import {type SearchHit} from '../../src/core/store/librarySearch';
 import SearchControls from '../../SearchControls';
 import ActivityBanner from '../../src/ui/ActivityBanner';
+import {setActivity} from '../../src/native/activity';
 import {mdToPlain} from '../../src/core/text/markdown';
-import {replaceNthWord, lowAfterFix} from '../../src/core/text/wordFix';
+import {wordOffsets, replaceAtOffset, lowAfterFix} from '../../src/core/text/wordFix';
 import {
   resolveAutoTarget,
   modeLabel,
@@ -57,8 +59,7 @@ import {
   markManualSync,
   resolveTrackedNotes,
   autoTranscriptTick,
-  getManualStale,
-  setManualStale, cancelManualSync, getManualWanted} from '../../src/native/autoTranscript';
+  recordOwed} from '../../src/native/autoTranscript';
 import {sleepHybrid} from '../../src/native/nativeSleep';
 import {pipelineFromStoreSplit} from '../../src/native/pipelineStats';
 import type {PipelineStages, TrackedTotal} from '../../src/core/store/pipeline';
@@ -102,6 +103,7 @@ import {
   upsertTranscript,
   finishVisionLive,
   pendingVisionPages,
+  pdfPrintedCovered,
 } from '../../src/native/reading';
 import {
   readStoredPageText,
@@ -121,7 +123,11 @@ import {
   runExport,
   type ExportFormat,
 } from '../../src/native/exporter';
-import {eurosTotal, FULL_PAGE_READ_CENTS} from '../../src/core/model/reader';
+import {
+  eurosTotal,
+  FULL_PAGE_READ_CENTS,
+  READ_COST_CENTS,
+} from '../../src/core/model/reader';
 import {
   assembleVisionPrompt,
   assemblePdfVisionPrompt,
@@ -558,6 +564,9 @@ function LibraryScreen({
   } | null>(null);
   const [pipeDetailsNotes, setPipeDetailsNotes] = useState<boolean>(false);
   const [pipeDetailsPdf, setPipeDetailsPdf] = useState<boolean>(false);
+  // The SYNC STATUS bars duplicate the frame's aggregate pending; hidden by
+  // default behind one toggle (status-line rationalisation 2026-08-14).
+  const [pipeStatusOpen, setPipeStatusOpen] = useState<boolean>(false);
 
   // v0.78.7: turn a raw HTTP failure reason into a plain-language line so a
   // stalled sync says WHY instead of looking dead. Returns null when the
@@ -626,17 +635,19 @@ function LibraryScreen({
     }
     setFinishingVision(true);
     setFinishVisionKind(kind);
-    setMsg(
-      kind === 'pdf'
-        ? 'Vision on OCR-only PDF pages: needs a PDF open (also runs by itself when one is)…'
-        : 'Vision on OCR-only note pages: needs a note open (also runs by itself when one is)…',
-    );
+    // Progress rides the single activity banner (with its Stop); msg keeps
+    // only the terminal result (status-line rationalisation 2026-08-14).
+    setActivity({label: kind === 'pdf' ? 'Vision (PDF pages)' : 'Vision (note pages)'});
     try {
       const r = await finishVisionLive(
         captureBridge(),
         keyState.config.apiKey,
         assembleVisionPrompt(promptBlocks),
-        {kind, onProgress: (d, t) => setMsg(`Vision: ${d}/${t} page(s)…`)},
+        {
+          kind,
+          onProgress: (d, t) =>
+            setActivity({label: 'Vision', done: d, total: t}),
+        },
       );
       await refreshLib().catch(() => {});
       const wall = accountWallMsg(r.reason);
@@ -666,6 +677,7 @@ function LibraryScreen({
     } catch (e) {
       setMsg(`Vision failed: ${String((e as Error).message ?? e)}`);
     } finally {
+      setActivity(null); // banner clears itself
       setFinishingVision(false);
       setFinishVisionKind(null);
     }
@@ -688,7 +700,8 @@ function LibraryScreen({
       return;
     }
     setSyncKind('now');
-    setMsg('Syncing…');
+    // No progress msg: the button shows "Syncing…" and the tick drives the
+    // activity banner — msg keeps only the result (rationalisation 2026-08-14).
     try {
       // v0.88 (audit): arriving on the Library pokes a background tick, so
       // the button often landed on "a sync is already running" and the
@@ -701,7 +714,7 @@ function LibraryScreen({
         onProgress: name => setSyncingNote(name),
       });
       for (let i = 0; i < 60 && !r.ran && /already running/i.test(r.reason ?? ''); i++) {
-        setMsg('Another pass is finishing, yours runs right after…');
+        // The running pass already owns the activity banner; just wait.
         await sleepHybrid(2_000);
         r = await autoTranscriptTick(captureBridge(), {
           force: true,
@@ -742,7 +755,7 @@ function LibraryScreen({
       return;
     }
     setSyncKind('auto');
-    setMsg('Auto sync…');
+    // Button shows "Syncing…", tick drives the banner — msg keeps the result.
     try {
       let r = await autoTranscriptTick(captureBridge(), {
         force: true,
@@ -751,7 +764,7 @@ function LibraryScreen({
         onProgress: name => setSyncingNote(name),
       });
       for (let i = 0; i < 60 && !r.ran && /already running/i.test(r.reason ?? ''); i++) {
-        setMsg('Another pass is finishing, yours runs right after…');
+        // The running pass already owns the activity banner; just wait.
         await sleepHybrid(2_000);
         r = await autoTranscriptTick(captureBridge(), {
           force: true,
@@ -1142,12 +1155,11 @@ function LibraryScreen({
               ? rawT
               : ((rawT as {result?: unknown})?.result as number);
           if (typeof t === 'number' && t > 0) {
-            const need = await pagesNeedingRead(
-              captureBridge(),
-              p,
-              Array.from({length: t}, (_, i) => i),
-            );
-            setManualStale(p, need.length);
+            const wantedN = Array.from({length: t}, (_, i) => i);
+            // No precomputedRead: let recordOwed run pagesNeedingRead AND apply
+            // the per-page failure-backoff filter (round-4 audit — a raw count
+            // here included pageFails-parked pages that Sync-now never reads).
+            await recordOwed(captureBridge(), p, wantedN);
           }
         } catch {
           // keep the previous count
@@ -1160,15 +1172,41 @@ function LibraryScreen({
       const pdfs = [...tracked.entries()]
         .filter(([p2, t2]) => t2.mode === 'manual' && !isNotePath(p2))
         .map(([p2]) => p2);
-      let pdfDone = 0;
+      // A changed Manual PDF (byte size ≠ stored docHash) is otherwise invisible
+      // to the structural count (pdfCovered keys off docHash≠'', not the size),
+      // so it showed "up to date" with Sync-now greyed and could never re-read
+      // (round-5 audit). Flag it via owed.read = its page count; this SELF-CLEARS
+      // when the PDF is re-read (readPdf's docHash stamp invalidates owed, even
+      // if every page is lock-skipped — owed-lifecycle audit 2026-08-14).
+      // NOTE: this gate keys on the PRINTED bytes only, on purpose. An
+      // annotation-only change (.mark grows, PDF bytes unchanged) is NOT flagged
+      // here — overloading owed.read=nPages for it created a permanent phantom
+      // "N to sync" the Vision-only covered re-read could never clear. That
+      // narrow gap (a lone annotated Manual PDF, Sync-now greyed) is pre-existing
+      // and needs a dedicated "pending recheck" signal, not owed.read.
       for (const p2 of pdfs) {
-        setCheckStatus(`Checking Manual PDFs ${++pdfDone}/${pdfs.length}…`);
         try {
           const size = await readFileSize(p2);
           const st = await loadStore();
+          const doc = st.docs[p2];
           const h = getDocHash(st, p2);
-          if (h.length > 0 && size !== null && size > 0 && h !== String(size)) {
-            setManualStale(p2, Math.max(1, docPageCount(st, p2)));
+          // Compare PRINTED bytes via pdfPrintedCovered, which strips the
+          // pre-Phase-B legacy "bytes|m<size>" suffix exactly like every paid
+          // PDF path. A raw `h !== String(size)` false-positived a covered
+          // legacy-suffix PDF ("1000|m50" !== "1000") into an owed.read phantom
+          // Sync-now could never clear (owed-lifecycle audit 2026-08-14).
+          if (h.length > 0 && size !== null && size > 0 && !pdfPrintedCovered(doc, size)) {
+            // Whole-doc paid re-read: EVERY page re-reads, so pass the full page
+            // list as the read set — recordOwed then derives vision=0 (every page
+            // is in the read set, nothing owes Vision separately). A bare count
+            // here would leave vision uncomputed (round-7: it must be a LIST).
+            const nPages = Math.max(1, docPageCount(st, p2));
+            await recordOwed(
+              captureBridge(),
+              p2,
+              [],
+              Array.from({length: nPages}, (_, i) => i),
+            );
           }
         } catch {
           // no size stat — leave the PDF as-is
@@ -1250,11 +1288,6 @@ function LibraryScreen({
   // ---- v0.94 locks: per page, and per document -------------------------
   const [lockTick, setLockTick] = useState(0);
   const [lockedDocs, setLockedDocs] = useState<Set<string>>(new Set());
-  // Standing Sync-now orders (visible + cancellable, v0.98.1).
-  const [wantedCount, setWantedCount] = useState(0);
-  useEffect(() => {
-    setWantedCount(getManualWanted().size);
-  }, [lockTick, libCountSig]);
   const [lockState, setLockState] = useState({
     doc: false,
     page: false,
@@ -1399,7 +1432,8 @@ function LibraryScreen({
           baseDir: g.baseDir,
           selection: req.selection,
           now: Date.now(),
-          onProgress: (l, d, t) => setMsg(`⇪ exporting ${l} (${d}/${t})…`),
+          onProgress: (l, d, t) =>
+            setActivity({label: `Exporting ${l}`, done: d, total: t}),
         });
         written += r.written.length;
         failed += r.failed.length;
@@ -1413,9 +1447,9 @@ function LibraryScreen({
         markExportDone(`${req.label}|${req.fmt}`);
       }
     } catch (e) {
-      // Without this, a rejection left "⇪ exporting…" on screen for good.
       setMsg(`⚠ Export failed: ${(e as Error)?.message ?? String(e)}`);
     } finally {
+      setActivity(null);
       setExporting(false);
     }
   }, [setMsg, markExportDone]);
@@ -1491,7 +1525,7 @@ function LibraryScreen({
     try {
       const allPaths = req.groups.flatMap(g => g.paths);
       for (const [i, path] of allPaths.entries()) {
-        setMsg(`⇪ reading ${i + 1}/${allPaths.length}…`);
+        setActivity({label: 'Reading for export', done: i + 1, total: allPaths.length});
         if (isNotePath(path)) {
           let range = req.selection;
           if (range === undefined) {
@@ -1538,11 +1572,13 @@ function LibraryScreen({
         }
       }
       refreshLib().catch(() => {});
+      setActivity(null); // doExport sets its own banner from here
       await doExport(req);
     } finally {
+      setActivity(null);
       setExporting(false);
     }
-  }, [exportAsk, keyState, promptBlocks, doExport, refreshLib, setMsg]);
+  }, [exportAsk, keyState, promptBlocks, doExport, refreshLib]);
 
   // Folder / whole-library entry points (resolve the tree, then the
   // common startExport flow).
@@ -1902,30 +1938,30 @@ function LibraryScreen({
         const total = st && st.total > 0 ? st.total : pageCounts[fp] ?? 0;
         const count = total > 0 ? `${total} p` : '';
         // total - READ (blanks count as done, like the banner). A tracked
-        // file the store has never seen is entirely pending. A docHash-
-        // stamped PDF is fully read (text-less pages have no entry).
-        // Stale override for CURRENTLY-Manual files only (2026-07-19
-        // evening: a note flipped to Auto kept its stale count — the row
-        // said "23 to read" with all 23 pages read and stored).
-        const staleN =
-          eff?.mode === 'manual' ? getManualStale().get(fp) : undefined;
-        const pend =
-          staleN !== undefined
-            ? staleN
-            : st
-            ? st.pdfCovered
-              ? 0
-              : Math.max(0, st.total - st.read)
-            : total;
+        // Same selection as the frame and the SYNC bar (docPending): `pend` =
+        // pages owing a PAID read, `ocrN` = pages owing only Vision. A doc the
+        // store has never seen is entirely pending (structural queue = total).
+        const {read: pend, vision: ocrN} = docPending(
+          st?.owed,
+          st
+            ? {queued: st.queued, ocrPending: st.ocrPending}
+            : {queued: total, ocrPending: 0},
+          total,
+        );
         // The inline "⟳ reading…" state left the tree on purpose (perf
         // audit 2026-07-20): it depended on syncingNote, so EVERY page
         // read during a sync rebuilt the whole tree. Live progress shows
         // in the SYNCHRONISATION frame and on the Stop button instead.
+        // Two ticks (user decision 2026-08-12): first ✓ = OCR read, second ✓ =
+        // Vision done. `✓` alone = OCR done, Vision still owed; `✓✓` = fully
+        // done. Unread pages show the paid-read count as before.
         const stText = tracked
           ? st
             ? pend > 0
               ? `${count} · ${pend} to read`
-              : `${count} · ✓`
+              : ocrN > 0
+              ? `${count} · ✓ vision…`
+              : `${count} · ✓✓`
             : count.length > 0
             ? `${count} · ${total} to read`
             : 'not read'
@@ -1933,6 +1969,8 @@ function LibraryScreen({
         const stStyle =
           tracked && pend > 0
             ? styles.stPend
+            : tracked && st && ocrN > 0
+            ? styles.stOcr
             : tracked && st && pend === 0
             ? styles.stOk
             : styles.stOff;
@@ -2020,7 +2058,7 @@ function LibraryScreen({
   // syncFrameModel.ts — testable money math, out of the screen.
   const syncFrame = useMemo(
     () =>
-      computeSyncFrame(lib, treeCache, autoTargets, pageCounts, getManualStale()),
+      computeSyncFrame(lib, treeCache, autoTargets, pageCounts),
     [lib, treeCache, autoTargets, pageCounts],
   );
 
@@ -2230,11 +2268,17 @@ function LibraryScreen({
       return;
     }
     const {orig, draft, nth} = wordFix;
-    // The rules live in src/core/text/wordFix.ts, with the device report
-    // of 2026-08-12 pinned as tests: rewrite the occurrence that was
-    // TAPPED (this used to hit the first match whichever one you touched),
-    // and keep the word flagged while any occurrence of it is left.
-    const nextText = replaceNthWord(pageView.text, orig, nth, draft);
+    // The rules live in src/core/text/wordFix.ts (device report 2026-08-12 +
+    // full-scope audit pinned as tests): map the tapped ordinal to its EXACT
+    // character offset over the tappable occurrences (skipping table/code, like
+    // the screen does), then replace THERE — a by-count replace on the raw
+    // markdown hit a table cell the user never touched. Keep the word flagged
+    // while any tappable occurrence is left.
+    const off = wordOffsets(pageView.text, orig)[nth];
+    const nextText =
+      off !== undefined
+        ? replaceAtOffset(pageView.text, off, orig, draft)
+        : pageView.text;
     const nextLow = lowAfterFix(pageView.low ?? [], orig, nextText);
     // Optimistic UI FIRST: show the correction instantly. The persistence
     // below does a slow ensureNoteFresh (save + retries); doing it before
@@ -2751,8 +2795,9 @@ function LibraryScreen({
                 const man = agg.manual;
                 const last = getLastSyncAt();
                 const lastManual = getLastManualSyncAt();
-                // "3 folders · 45 notes · 4 pdf · 1292 tracked" (v0.69
-                // schema): folders · notes · pdf · tracked, spelled out.
+                // "3 folders · 45 notes (1200 pages) · 4 pdf (92 pages)"
+                // (user 2026-08-14): page counts live WITH each file type,
+                // not as a lone "N tracked" total the user could not map back.
                 const filesLabel = (
                   a: (typeof agg)['auto'],
                   mode: 'auto' | 'manual' | 'off',
@@ -2760,14 +2805,34 @@ function LibraryScreen({
                   const f = foldersCnt[mode];
                   return [
                     f > 0 ? `${f} folder${f > 1 ? 's' : ''}` : null,
-                    `${a.noteFiles} notes`,
-                    a.pdfFiles > 0 ? `${a.pdfFiles} PDF` : null,
-                    `${a.pages} tracked`,
+                    `${a.noteFiles} notes (${a.notePages} pages)`,
+                    a.pdfFiles > 0 ? `${a.pdfFiles} pdf (${a.pdfPages} pages)` : null,
                   ]
                     .filter(x => x !== null)
                     .join(' · ');
                 };
                 const centsFull = FULL_PAGE_READ_CENTS;
+                // Regression audit 2026-08-12: Lot 2 enabled "Sync now" when
+                // only Vision is owed (visionPending), but the label/euro still
+                // read from toSync alone → an active button over "0 pages · ~0
+                // €" that then billed a Vision pass. Reflect BOTH: queued pages
+                // cost the full read, vision-pending pages the cheaper Vision
+                // leg (OCR already paid, READ_COST_CENTS).
+                const visionPending = agg.manual.visionPending;
+                const syncPages = toSync + visionPending;
+                // Harmonised with Auto's "pages to read" (user 2026-08-14: the
+                // two columns used different verbs, "to read" vs "to sync").
+                const syncPendLabel =
+                  toSync > 0 && visionPending > 0
+                    ? `${toSync} to read + ${visionPending} to finish`
+                    : visionPending > 0
+                    ? `${visionPending} page(s) to finish (vision)`
+                    : `${toSync} pages to read`;
+                const syncEuro = (
+                  Math.round(
+                    toSync * centsFull + visionPending * READ_COST_CENTS,
+                  ) / 100
+                ).toFixed(2);
                 return (
                   <View style={styles.autoBanner}>
                     <View style={styles.syncTitleRow}>
@@ -2827,8 +2892,8 @@ function LibraryScreen({
                         count:
                           man.notes > 0
                             ? {
-                                pending: toSync,
-                                pendLabel: `${toSync} pages to sync`,
+                                pending: syncPages,
+                                pendLabel: syncPendLabel,
                               }
                             : null,
                         footer:
@@ -2851,7 +2916,7 @@ function LibraryScreen({
                                     know until we read them. */}
                                 {syncKind === 'now'
                                   ? `Syncing… ${syncingNote ?? ''}`
-                                  : `Sync now · ~${eurosTotal(toSync, centsFull)} €${
+                                  : `Sync now · ~${syncEuro} €${
                                       syncFrame.agg.manual.pdfUnknown > 0
                                         ? ` + ${syncFrame.agg.manual.pdfUnknown} PDF of unknown length`
                                         : ''
@@ -2862,27 +2927,12 @@ function LibraryScreen({
                       })}
                     </View>
 
-                    {/* Standing Sync-now orders (v0.98.1, user request):
-                        visible, and cancellable without mode gymnastics. */}
-                    {wantedCount > 0 ? (
-                      <View style={styles.syncColHead}>
-                        <Text style={[styles.modelNote, nf]}>
-                          {wantedCount} Sync-now order(s) pending (resume on
-                          their own until done)
-                        </Text>
-                        <TouchableOpacity
-                          onPress={() => {
-                            cancelManualSync();
-                            setWantedCount(0);
-                            setMsg('Sync-now order(s) cancelled.');
-                          }}
-                          hitSlop={{top: 6, bottom: 6}}>
-                          <Text style={[styles.modelNote, nf, {fontWeight: '700'}]}>
-                            ✕ Cancel
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : null}
+                    {/* The standing Sync-now order count line was removed
+                        (rationalisation 2026-08-14): the 4 queues (OCR + Vision,
+                        per note / PDF) already ARE the pending truth — a second
+                        counter was redundant and leaked stale orders. The orders
+                        mechanism stays internal and now self-empties when a doc
+                        owes nothing. */}
 
                     {/* ---- SYNC STATUS — split by type (notes / PDF), v0.86 ----
                         Notes and PDFs render under DIFFERENT hosts, so their
@@ -2892,6 +2942,27 @@ function LibraryScreen({
                     (pipe.notes.tracked > 0 || pipe.pdfs.tracked > 0) ? (
                       <>
                         <View style={styles.syncHr} />
+                        {/* One toggle for the whole SYNC STATUS block: the
+                            frame above already shows aggregate pending, so the
+                            per-type bars + stage details are opt-in (status-line
+                            rationalisation 2026-08-14). */}
+                        <TouchableOpacity
+                          activeOpacity={0.7}
+                          onPress={() => setPipeStatusOpen(v => !v)}
+                          style={styles.ssTop}>
+                          <Text style={styles.syncColTitle}>SYNC STATUS</Text>
+                          <Text
+                            style={[styles.modelNote, nf, styles.flex1, styles.lastAt]}>
+                            {`${pipe.notes.finished + pipe.pdfs.finished}p read / ${
+                              pipe.notes.tracked + pipe.pdfs.tracked
+                            }p tracked`}
+                          </Text>
+                          <Text style={styles.clearMiniText}>
+                            {pipeStatusOpen ? 'hide ▾' : 'details ▸'}
+                          </Text>
+                        </TouchableOpacity>
+                        {pipeStatusOpen ? (
+                        <>
                         {/* v0.88: make the render host VISIBLE — "why is my
                             other type not draining" was undiagnosable. */}
                         <Text style={[styles.modelNote, nf]}>
@@ -2949,11 +3020,21 @@ function LibraryScreen({
                           if (bar.s.tracked === 0) {
                             return null; // nothing tracked of this type
                           }
+                          const onGoing = bar.s.tracked - bar.s.finished;
+                          // N5 (2026-08-12): never round UP to 100% while pages
+                          // are still on-going — Math.round(99.5)=100 showed a
+                          // full bar next to "100% · 1p on-going".
                           const pct =
                             bar.s.tracked > 0
-                              ? Math.round((bar.s.finished / bar.s.tracked) * 100)
+                              ? onGoing > 0
+                                ? Math.min(
+                                    99,
+                                    Math.round(
+                                      (bar.s.finished / bar.s.tracked) * 100,
+                                    ),
+                                  )
+                                : 100
                               : 0;
-                          const onGoing = bar.s.tracked - bar.s.finished;
                           return (
                             <View key={bar.key} style={styles.syncTypeBlock}>
                               <TouchableOpacity
@@ -3024,6 +3105,8 @@ function LibraryScreen({
                           Vision (schemas &amp; handwritten annotations) needs a
                           PDF open in the background.
                         </Text>
+                        </>
+                        ) : null}
                       </>
                     ) : null}
 
@@ -3221,6 +3304,9 @@ const local = StyleSheet.create({
   // v0.80.0 (audit L4): pending is BOLDER than done — weight is the e-ink
   // signal (the two used to be pixel-identical).
   stPend: {color: '#000000', fontWeight: '800'},
+  // OCR read, Vision still owed (one tick): a middle state — darker than done,
+  // lighter than a paid-read backlog.
+  stOcr: {color: '#555555', fontWeight: '600'},
   stOff: {color: '#aaaaaa'},
 });
 export default LibraryScreen;

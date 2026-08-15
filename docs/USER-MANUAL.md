@@ -93,10 +93,10 @@ The old half-price Batch mode is gone (v0.79): everything now goes through
 one live pipeline, OCR 4 then Vision per page, throttled automatically when
 Mistral rate-limits. The sync adapts to what is on screen by itself: note
 pages are read while a note can be rendered, PDF Vision runs while a PDF
-reader is available ("Rendering via:" in the SYNC STATUS shows which), and
-interrupted Manual syncs finish on their own (a "Sync now" is a standing
-order). No page stays OCR-only: pending Vision passes run automatically as
-soon as the right app is open.
+reader is available ("Rendering via:" under SYNC STATUS → Details shows
+which). A "Sync now" reads what it can in one pass; if a big backlog remains,
+the counts show what is left — tap Sync now again. No page stays OCR-only:
+pending Vision passes run automatically as soon as the right app is open.
 
 ## CHAT
 

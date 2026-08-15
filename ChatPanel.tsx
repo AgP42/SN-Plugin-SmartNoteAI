@@ -87,6 +87,7 @@ import {
   readPdfPageVision,
   syncNotePages,
   upsertTranscript,
+  isOffForRead,
 } from './src/native/reading';
 import {
   loadStore,
@@ -328,14 +329,18 @@ export default function ChatPanel({
   // pessimistic default above) so a non-Off image becomes persistable.
   const resolveImageOff = useCallback(async (id: string, src?: string) => {
     if (src === undefined || src.length === 0) {
-      setCtxImages(cur =>
-        cur.map(c => (c.id === id ? {...c, off: false} : c)),
-      );
+      // Release audit 2026-08-12 (N1, privacy fail-open): a crop whose source
+      // path could not be captured (a transient getCurrentFilePath failure) has
+      // UNKNOWN provenance — it may be from an Off note. Stay pessimistic
+      // (off:true) so it is never persisted, and the send graft drops it: we
+      // must not send onward what we cannot verify. (Was off:false = sent +
+      // persisted with no consent.)
+      setCtxImages(cur => cur.map(c => (c.id === id ? {...c, off: true} : c)));
       return;
     }
     try {
-      const st = await readSettings();
-      const off = effectiveMode(st.autoTargets ?? {}, src) === 'off';
+      // isOffForRead, not raw effectiveMode, so a renamed Off note is caught (K1).
+      const off = await isOffForRead(src);
       setCtxImages(cur => cur.map(c => (c.id === id ? {...c, off} : c)));
     } catch {
       // settings unreadable: stay pessimistic (not persisted)
@@ -639,7 +644,37 @@ export default function ChatPanel({
             unread += Math.max(0, d.total - d.read);
           }
         }
-        m.set(a.id, {docs: paths.length, read, unread});
+        // N3 (2026-08-12): pages PINNED to the agent (a.docPages) ride with and
+        // are billed on every question, so they belong in "knows X doc(s) · Y
+        // page(s)". Count pages NOT already covered by a whole doc above; a
+        // pinned page with stored text is "read". Off docs stay excluded.
+        const wholeDocs = new Set(paths);
+        let pinnedDocs = 0;
+        for (const [p, pgs] of Object.entries(a.docPages ?? {})) {
+          if (wholeDocs.has(p) || effectiveMode(targets, p) === 'off') {
+            continue;
+          }
+          // Store-presence guard (re-audit 2026-08-12): the send composes only
+          // pages of docs still in the store; a pin to a purged doc is dropped
+          // there, so it must not inflate the stats here either.
+          if (store.docs[p] === undefined) {
+            continue;
+          }
+          pinnedDocs++;
+          // pdfCovered guard (regression audit 2026-08-12): a covered PDF's
+          // pages have no per-page entry, so getPage===null must NOT count them
+          // as unread (they are OCR-covered).
+          const covered = lib.find(x => x.path === p)?.pdfCovered === true;
+          for (const pg of pgs) {
+            const e = getPage(store, p, pg);
+            if (covered || (e !== null && e.text.trim().length > 0)) {
+              read++;
+            } else {
+              unread++;
+            }
+          }
+        }
+        m.set(a.id, {docs: paths.length + pinnedDocs, read, unread});
       }
       setAgentStats(m);
     })().catch(() => {});
@@ -822,12 +857,12 @@ export default function ChatPanel({
       return;
     }
     let alive = true;
-    readSettings()
-      .then(st => {
+    // isOffForRead (K1): a renamed Off note reads as Off here too, so the
+    // panel does not look includable while the send gate would block it.
+    isOffForRead(cap.notePath)
+      .then(off => {
         if (alive) {
-          setVoletOff(
-            effectiveMode(st.autoTargets ?? {}, cap.notePath) === 'off',
-          );
+          setVoletOff(off);
         }
       })
       .catch(() => {});
@@ -917,11 +952,15 @@ export default function ChatPanel({
         const candidates = [offPath, ...imgPaths].filter(p2 => p2.length > 0);
         let blocked: string | null = null;
         if (candidates.length > 0) {
-          const st = await readSettings();
-          const targets = st.autoTargets ?? {};
-          const offSet = new Set(
-            candidates.filter(p2 => effectiveMode(targets, p2) === 'off'),
-          );
+          // isOffForRead (not a raw effectiveMode) so a renamed Off note whose
+          // key was stranded is still treated as Off here (K1, 2026-08-12).
+          const offList: string[] = [];
+          for (const p2 of candidates) {
+            if (await isOffForRead(p2)) {
+              offList.push(p2);
+            }
+          }
+          const offSet = new Set(offList);
           if (offSet.size > 0) {
             // Mark the images so the save path can strip them: an Off file
             // is never persisted, consent or not.
@@ -1134,6 +1173,21 @@ export default function ChatPanel({
         // The STORED turn is text-only (v0.81). Lasso images ride only on
         // the wire (grafted onto `outgoingWire` below), so the history never
         // bloats and follow-ups don't double-send from prior turns.
+        // N1 (privacy fail-open, 2026-08-12): a crop whose source path could not
+        // be captured (src === '') has UNKNOWN provenance and bypassed the Off
+        // consent gate above (never among `candidates`). Never send onward what
+        // we cannot verify — drop it from the wire. Computed HERE (re-audit)
+        // because the 🖼 marker AND the "read the image" directive must key off
+        // what is ACTUALLY sent, or an empty-src capture sent a directive with
+        // zero images and stored a 🖼 that could never be restored.
+        const wireImages = ctxImages.filter(c => (c.src ?? '').length > 0);
+        if (wireImages.length < ctxImages.length) {
+          console.warn(
+            '[SmartNoteAI.chat]',
+            `${ctxImages.length - wireImages.length} lassoed image(s) left out ` +
+              '— their source note could not be verified (privacy).',
+          );
+        }
         const outgoing: ChatTurn =
           isOff && includeContext
             ? {role: 'user', text: userText, ephemeral: true}
@@ -1141,7 +1195,7 @@ export default function ChatPanel({
         // v0.81: mark the stored turn as having carried image(s) — a light
         // 🖼 in the bubble (the images themselves stay in ctxImages, visible
         // as removable chips, and persist until the user clears them).
-        if (ctxImages.length > 0) {
+        if (wireImages.length > 0) {
           outgoing.hadImage = true;
         }
         setTurns([...prior, outgoing]);
@@ -1172,7 +1226,7 @@ export default function ChatPanel({
             ? sendSettings.lassoDirective
             : DEFAULT_LASSO_DIRECTIVE;
         const directive =
-          ctxImages.length > 0 && lassoDir.trim().length > 0
+          wireImages.length > 0 && lassoDir.trim().length > 0
             ? `\n\n${lassoDir.trim()}`
             : '';
         const system = (baseSystem + agentDocsSection + directive).trim();
@@ -1185,10 +1239,11 @@ export default function ChatPanel({
         );
         // v0.81: graft the persistent lasso images onto the OUTGOING turn
         // for the wire only (stored turns stay text-only). They ride EVERY
-        // send until the user removes their chips.
+        // send until the user removes their chips. `wireImages` (computed above)
+        // already excludes the unverifiable empty-src crops.
         const outgoingWire: ChatTurn =
-          ctxImages.length > 0
-            ? {...outgoing, images: ctxImages.map(c => c.image)}
+          wireImages.length > 0
+            ? {...outgoing, images: wireImages.map(c => c.image)}
             : outgoing;
         const chatReq = {
           system,

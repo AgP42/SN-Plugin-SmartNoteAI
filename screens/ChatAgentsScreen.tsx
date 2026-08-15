@@ -277,6 +277,11 @@ function ChatAgentsScreen({
   const [charsByPath, setCharsByPath] = useState<Map<string, number>>(
     new Map(),
   );
+  // Per-page chars (N3, 2026-08-12): pages PINNED to an agent (a.docPages) are
+  // sent and billed but were absent from the cost/knowledge estimate, so an
+  // agent whose context is entirely pinned pages showed "0 doc · 0 page · ~0¢".
+  // Keyed `${path}#${page}` so the estimate can price the exact pinned pages.
+  const [pageChars, setPageChars] = useState<Map<string, number>>(new Map());
   const {armed: delArmed, confirm: confirmDel} = useArmedConfirm(4000);
   const modelInfo = useModelInfo(
     keyState.kind === 'ok' ? keyState.config.apiKey : null,
@@ -318,17 +323,23 @@ function ChatAgentsScreen({
         return;
       }
       const m = new Map<string, number>();
+      const pm = new Map<string, number>();
       for (const d of lib) {
         let chars = 0;
         for (let p = 0; p < Math.max(d.total, d.read); p++) {
           const e = getPage(store, d.path, p);
           if (e !== null) {
             chars += e.text.length;
+            // TRIMMED length (re-audit 2026-08-12): the send drops a
+            // whitespace-only page (text.trim().length===0), so the estimate
+            // must too — otherwise a blank OCR page shows as read + billed.
+            pm.set(`${d.path}#${p}`, e.text.trim().length);
           }
         }
         m.set(d.path, chars);
       }
       setCharsByPath(m);
+      setPageChars(pm);
     })().catch(() => {});
     return () => {
       alive = false;
@@ -475,10 +486,43 @@ function ChatAgentsScreen({
         unread += d.pdfCovered ? 0 : Math.max(0, d.total - d.read);
       }
     }
+    // N3 (2026-08-12): PINNED pages (a.docPages) are sent + billed too, so they
+    // must be in the estimate. Count only pages NOT already covered by a whole
+    // doc above, and skip Off docs like everything else.
+    const wholeDocs = new Set(paths);
+    let pinnedDocs = 0;
+    for (const [p, pgs] of Object.entries(sel.docPages ?? {})) {
+      if (wholeDocs.has(p) || isOff(p)) {
+        continue;
+      }
+      // Store-presence guard (re-audit 2026-08-12): the send only composes pages
+      // of docs still IN the store (resolveAgentDocPages over storePaths). A pin
+      // to a doc whose transcript was purged is dropped there, so skip it here
+      // too — otherwise the card invents a doc and "N not synced".
+      const d = lib.find(x => x.path === p);
+      if (d === undefined) {
+        continue;
+      }
+      pinnedDocs++;
+      // pdfCovered guard (regression audit 2026-08-12): a pinned page of a
+      // fully-OCR'd PDF has no per-page entry (pageChars miss → 0), so without
+      // this it counted as unread forever, exactly the bug the whole-doc loop
+      // guards above (audit 2026-07-19 #6).
+      const covered = d.pdfCovered === true;
+      for (const pg of pgs) {
+        const c = pageChars.get(`${p}#${pg}`) ?? 0;
+        chars += c;
+        if (c > 0 || covered) {
+          read++;
+        } else {
+          unread++;
+        }
+      }
+    }
     const modelId = sel.model.trim() || DEFAULT_MODEL;
     const cost = estimateAgentCost(chars, inputPriceEurPerM(modelId));
-    return {docs: paths.length, read, unread, ...cost};
-  }, [sel, lib, charsByPath, isOff]);
+    return {docs: paths.length + pinnedDocs, read, unread, ...cost};
+  }, [sel, lib, charsByPath, pageChars, isOff]);
 
   const mf = {fontSize: 13 * scale, lineHeight: 20 * scale};
   const nf = {fontSize: 12 * scale, lineHeight: 17 * scale};

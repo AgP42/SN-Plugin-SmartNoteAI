@@ -17,6 +17,8 @@ import {
   finishVisionLive,
   syncNotePages,
   pageStamp,
+  isOffForRead,
+  pdfPrintedCovered,
 } from './reading';
 import {fetchAdapter} from './fetchAdapter';
 import {readPageIds, readNotePageRevs} from './noteTranscripts';
@@ -29,6 +31,8 @@ import {
   setDocHash,
   setDocLock,
   setPageIds,
+  setOwed,
+  getOwed,
   upsertPage,
   type PageEntry,
   type Store,
@@ -41,8 +45,23 @@ jest.mock('./renameFollow', () => ({
   provenGone: jest.fn(async () => false),
   followRename: jest.fn(async () => undefined),
 }));
+// reading.ts uses only listDirNative from ./fs (renameFollow + transcriptStoreIo
+// are mocked). Default [] = an empty/failed listing (proves no absence).
+jest.mock('./fs', () => ({listDirNative: jest.fn(async () => [])}));
 // The Off gate (audit 2026-07-18) reads settings; untracked = 'manual'.
-jest.mock('./settings', () => ({readSettings: jest.fn(async () => ({}))}));
+// Default mode is Off (2026-08-12): an untracked path is never read, so these
+// read-MECHANICS tests must present their docs as tracked. The folder keys
+// cover every path constant used below (/Note/…, /Document/…). Tests that
+// exercise Off/eph behaviour drive it through the offOk/eph params directly.
+jest.mock('./settings', () => ({
+  readSettings: jest.fn(async () => ({
+    autoTargets: {
+      '/Note': {mode: 'auto'},
+      '/Document': {mode: 'auto'},
+      '/Autre': {mode: 'auto'},
+    },
+  })),
+}));
 jest.mock('./noteTranscripts', () => ({
   readPageIds: jest.fn(),
   readLandscapePages: jest.fn(async () => new Set()),
@@ -908,6 +927,23 @@ describe('R3 — reuse stored OCR on a vision retry (no re-pay)', () => {
     expect(getPage(storeState.store, NOTE, 1)!.va).toBeUndefined();
   });
 
+  it('finishVisionLive settling a page INVALIDATES the engine owed count (round-7/lifecycle audit)', async () => {
+    // The drain runs AFTER the note loop's recordOwed. Settling an OCR-only
+    // page (ocr->finished via the va marker) makes owed.vision stale-HIGH with
+    // no recompute path for a stamped note — the drain must drop owed so the
+    // readers fall back to the now-correct structural count (permanent phantom
+    // "✓ vision…" / canSync stuck otherwise).
+    upsertPage(storeState.store, NOTE, 0, entry(PA, {text: 'ocr 0', rev: 'a1'}), 1);
+    pageIdsMock.mockResolvedValue(idMap(PA));
+    revsMock.mockResolvedValue(new Map([[0, 'a1']]));
+    // Engine recorded owed.vision=1 for this OCR-only page just before the drain.
+    setOwed(storeState.store, NOTE, {read: 0, vision: 1}, 1);
+    route({chat: () => chatRes('')}); // Vision runs, nothing to add -> settle
+    await finishVisionLive(baseDeps(), 'key', 'SYS', {kind: 'note'});
+    expect(getPage(storeState.store, NOTE, 0)!.va).toBe('a1'); // settled
+    expect(getOwed(storeState.store, NOTE)).toBeNull(); // owed dropped, not stale
+  });
+
   it('finishVisionLive render breaker (v0.87.2): a doomed host stops after 3 renders, later docs untouched', async () => {
     // Two PDFs with a big pending-Vision backlog, but NO PDF host: every
     // render fails. The old behaviour attempted every single page (a 3742-
@@ -1169,8 +1205,10 @@ describe('a CUT vision answer never wins (device report 2026-08-12)', () => {
     const e = getPage(s, NOTE, 0)!;
     expect(e.text).toContain('le texte complet de la page'); // OCR kept
     expect(e.source).toBe('mistral-ocr');
-    // …and NOT sealed as vision-settled, so the page can be read again.
-    expect(e.va).toBeUndefined();
+    // N2 (full-scope audit): SETTLED at this rev — a retry at the same 4000
+    // ceiling would only re-truncate and re-bill. It re-opens if the ink
+    // changes (va keyed to the rev), never on the identical image.
+    expect(e.va).toBe('a1');
   });
 
   it('an untruncated answer still wins as before', async () => {
@@ -1182,6 +1220,23 @@ describe('a CUT vision answer never wins (device report 2026-08-12)', () => {
     });
     await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
     expect(getPage(s, NOTE, 0)!.source).toBe('medium');
+  });
+
+  it('OCR failed too: the CUT half is kept AND settled (no wasteful retry)', async () => {
+    // With no OCR fallback, the truncated half is kept (partial beats blank) as
+    // 'mistral-ocr' (never a final 'medium'), and N2: SETTLED — re-running
+    // Vision at the same ceiling would only re-truncate and re-bill.
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA, PB]);
+    route({
+      ocr: () => httpErr(500), // OCR leg down → no fallback text
+      chat: () => cutRes('la moitié transcrite avant le'),
+    });
+    await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    const e = getPage(s, NOTE, 0)!;
+    expect(e.text).toBe('la moitié transcrite avant le'); // partial kept
+    expect(e.source).toBe('mistral-ocr'); // NOT 'medium'
+    expect(e.va).toBe('a1'); // settled at this rev — no same-ceiling retry
   });
 });
 
@@ -1200,6 +1255,18 @@ describe('vision landed but added nothing (release audit 2026-08-12)', () => {
     // The marker the drain reads: without it the page was collected again
     // and a second Vision call was paid on the identical image.
     expect(e.va).toBe(e.rev ?? '');
+  });
+});
+
+describe('pdfPrintedCovered strips the legacy |m suffix (changed-PDF gate, audit 2026-08-14)', () => {
+  it('a legacy "bytes|m<n>" docHash is covered when the bytes match', () => {
+    // The "Check for changes" gate must NOT flag an unchanged legacy-suffix PDF
+    // as changed — a raw h!==String(size) false-positived it into a permanent
+    // owed.read phantom Sync-now could never clear.
+    expect(pdfPrintedCovered({docHash: '1000|m50'}, 1000)).toBe(true);
+    expect(pdfPrintedCovered({docHash: '1000'}, 1000)).toBe(true);
+    expect(pdfPrintedCovered({docHash: '1000|m50'}, 1200)).toBe(false); // real change
+    expect(pdfPrintedCovered(undefined, 1000)).toBe(false);
   });
 });
 
@@ -1225,6 +1292,20 @@ describe('unchanged pixels settle free (collecte ②: write-then-erase)', () => 
     expect(e.rev).toBe('a1'); // re-baselined to the live address
     expect(e.va).toBe('a1'); // the rev-keyed marker followed
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('the pixel-skip settle INVALIDATES a stale owed (no phantom "N to sync")', async () => {
+    // The rev re-stamp settles the page (pagesNeedingRead no longer flags it),
+    // so a recorded owed.read=1 would persist as a phantom for direct callers
+    // (readThenExport / gatherContext don't recompute owed).
+    const s = storeState.store;
+    setPageIds(s, NOTE, [PA]);
+    upsertPage(s, NOTE, 0, entry(PA, {text: 'garde', rev: 'a0', vh: TAG, va: 'a0'}), 1);
+    setOwed(s, NOTE, {read: 1, vision: 0}, 1);
+    route({});
+    await readNotePages(baseDeps(), 'k', 'sys', NOTE, [0]);
+    expect(getPage(s, NOTE, 0)!.rev).toBe('a1'); // settled
+    expect(getOwed(s, NOTE)).toBeNull(); // owed dropped, not stale
   });
 
   it('pixels actually changed → normal paid re-read, and the new vh is stamped', async () => {
@@ -1465,5 +1546,76 @@ describe('PDF adoption by identity (readPdf)', () => {
     const e = getPage(s, NEW_PDF, 0);
     expect(e?.text).not.toBe('page pdf');
     expect(getPage(s, PDF, 0)!.text).toBe('page pdf'); // donor untouched
+  });
+});
+
+// K1 (release audit 2026-08-12, critical/privacy): a per-file Off decision is
+// keyed by PATH; a rename strands the key so the new path re-inherits its
+// folder's (possibly permissive) mode. The default-Off change closes this for
+// UNTRACKED folders; isOffForRead closes it inside an Auto/Manual folder. The
+// solo audit had cleared orphanedModeFor as "correct" but missed that it was
+// never wired into the read gates — this pins that it now is.
+describe('isOffForRead — an Off decision survives a rename', () => {
+  const settingsMock = jest.requireMock('./settings') as {
+    readSettings: jest.Mock;
+  };
+  const fsMock = jest.requireMock('./fs') as {listDirNative: jest.Mock};
+  const renameMock = jest.requireMock('./renameFollow') as {
+    provenGone: jest.Mock;
+  };
+
+  it('an explicitly Off path is Off (fast path, no folder listing)', async () => {
+    settingsMock.readSettings.mockResolvedValueOnce({
+      autoTargets: {'/Priv/a.note': {mode: 'off'}},
+    });
+    expect(await isOffForRead('/Priv/a.note')).toBe(true);
+    expect(fsMock.listDirNative).not.toHaveBeenCalled();
+  });
+
+  it('an explicit non-Off decision AT the path wins over an Off folder', async () => {
+    settingsMock.readSettings.mockResolvedValueOnce({
+      autoTargets: {'/X': {mode: 'off'}, '/X/a.note': {mode: 'manual'}},
+    });
+    expect(await isOffForRead('/X/a.note')).toBe(false);
+  });
+
+  it('no stricter sibling in the folder → no listing, not Off', async () => {
+    settingsMock.readSettings.mockResolvedValueOnce({
+      autoTargets: {'/X': {mode: 'auto'}},
+    });
+    expect(await isOffForRead('/X/new.note')).toBe(false);
+    expect(fsMock.listDirNative).not.toHaveBeenCalled();
+  });
+
+  it('a renamed Off note inside an Auto folder is STILL Off', async () => {
+    // /Notes = Auto; Diary.note explicitly Off; renamed to Journal.note.
+    settingsMock.readSettings.mockResolvedValueOnce({
+      autoTargets: {'/Notes': {mode: 'auto'}, '/Notes/Diary.note': {mode: 'off'}},
+    });
+    fsMock.listDirNative.mockResolvedValueOnce([
+      {name: 'Journal.note', isDir: false}, // Diary gone, this is the rename
+    ]);
+    renameMock.provenGone.mockResolvedValueOnce(true); // Diary.note proven absent
+    expect(await isOffForRead('/Notes/Journal.note')).toBe(true);
+  });
+
+  it('two untracked siblings → ambiguous → refuses to force Off', async () => {
+    settingsMock.readSettings.mockResolvedValueOnce({
+      autoTargets: {'/Notes': {mode: 'auto'}, '/Notes/Diary.note': {mode: 'off'}},
+    });
+    fsMock.listDirNative.mockResolvedValueOnce([
+      {name: 'Journal.note', isDir: false},
+      {name: 'Other.note', isDir: false},
+    ]);
+    renameMock.provenGone.mockResolvedValueOnce(true);
+    expect(await isOffForRead('/Notes/Journal.note')).toBe(false);
+  });
+
+  it('an empty/failed listing proves no absence → not Off', async () => {
+    settingsMock.readSettings.mockResolvedValueOnce({
+      autoTargets: {'/Notes': {mode: 'auto'}, '/Notes/Diary.note': {mode: 'off'}},
+    });
+    fsMock.listDirNative.mockResolvedValueOnce([]); // [] = empty OR failed
+    expect(await isOffForRead('/Notes/Journal.note')).toBe(false);
   });
 });

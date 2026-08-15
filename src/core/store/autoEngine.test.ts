@@ -20,8 +20,8 @@ describe('cycleMode / modeLabel', () => {
     expect(modeLabel('manual')).toBe('Manual');
     expect(modeLabel('auto')).toBe('Auto');
   });
-  it('default mode is Manual', () => {
-    expect(DEFAULT_MODE).toBe('manual');
+  it('default mode is Off (privacy-first, 2026-08-12)', () => {
+    expect(DEFAULT_MODE).toBe('off');
   });
 });
 
@@ -47,9 +47,9 @@ describe('resolveAutoTarget / effectiveMode', () => {
     expect(resolveAutoTarget(map, '/Note/Pro/y.note')).toEqual({mode: 'auto'});
     expect(effectiveMode(map, '/Note/Pro/Sub/z.note')).toBe('manual');
   });
-  it('untracked → null, effective falls back to the default (Manual)', () => {
+  it('untracked → null, effective falls back to the default (Off)', () => {
     expect(resolveAutoTarget(map, '/Note/Perso/a.note')).toBeNull();
-    expect(effectiveMode(map, '/Note/Perso/a.note')).toBe('manual');
+    expect(effectiveMode(map, '/Note/Perso/a.note')).toBe('off');
     expect(
       resolveAutoTarget({'/Note/Pro': {mode: 'auto'}}, '/Note/Project/a.note'),
     ).toBeNull();
