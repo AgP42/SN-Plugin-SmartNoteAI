@@ -467,6 +467,70 @@ export const searchLibraryAdvanced = (
         });
       }
     }
+    // NAME hit (user decision 2026-08-16): a bare-word query also matches the
+    // DOCUMENT NAME — typing "bujo" must find BUJO_T12S10.pdf even though no
+    // page's text contains the word (the field's grammar searched content
+    // only, and even its designer fell for it). ONE synthetic hit per
+    // matching doc, ranked above every content hit. Only for name-compatible
+    // queries: a page-scoped criterion (phrase, kw:, star:, src:, p:,
+    // approx:, after:/before:) speaks about page content a name can never
+    // satisfy, so its presence disables the name interpretation entirely.
+    const nameOk =
+      crit.some(c => c.type === 'contains' || c.type === 'any') &&
+      crit.every(c =>
+        ['contains', 'any', 'exclude', 'notebook', 'folder', 'doctype'].includes(
+          c.type,
+        ),
+      );
+    if (nameOk) {
+      let ok = true;
+      let matched = 0;
+      for (const c of crit) {
+        if (c.type === 'contains') {
+          for (const w of prep.get(c)?.words ?? []) {
+            if (!nameLow.includes(w)) {
+              ok = false;
+              break;
+            }
+            matched++;
+          }
+        } else if (c.type === 'any') {
+          if ((prep.get(c)?.words ?? []).some(w => nameLow.includes(w))) {
+            matched++;
+          } else {
+            ok = false;
+          }
+        } else if (c.type === 'exclude') {
+          if ((prep.get(c)?.words ?? []).some(w => nameLow.includes(w))) {
+            ok = false;
+          }
+        } else if (c.type === 'notebook') {
+          if (!nameLow.includes(prep.get(c)?.p ?? '')) ok = false;
+        } else if (c.type === 'folder') {
+          if (!folderLow.includes(prep.get(c)?.p ?? '')) ok = false;
+        } else if (c.type === 'doctype') {
+          const isNote = /\.note$/i.test(path);
+          const v = c.value.trim().toLowerCase();
+          if (v === 'note' ? !isNote : v === 'pdf' ? isNote : true) ok = false;
+        }
+        if (!ok) break;
+      }
+      if (ok && matched > 0) {
+        scored.push({
+          score: 100_000 + matched, // a name match outranks any content hit
+          hit: {
+            path,
+            name,
+            folder,
+            // Land on the first transcribed page (0 when nothing read yet).
+            page: docMinPage >= 0 ? docMinPage : 0,
+            snippet: '(document name)',
+            at: 0,
+            terms: highlight,
+          },
+        });
+      }
+    }
   }
   scored.sort((a, b) => {
     if (sort === 'date') {

@@ -100,9 +100,12 @@ describe('searchLibraryAdvanced — multi-criteria (v0.25.9)', () => {
       {type: 'contains', value: 'budget'},
       {type: 'exclude', value: 'brouillon pancakes'},
     ]);
-    expect(r).toHaveLength(1);
-    expect(r[0].path).toBe('/Note/Pro/Budget.note');
-    expect(r[0].page).toBe(0);
+    // 2 hits since the name feature (2026-08-16): the doc is NAMED Budget →
+    // one name hit on top, then the content hit; the brouillon page stays out.
+    expect(r).toHaveLength(2);
+    expect(r[0].snippet).toBe('(document name)');
+    expect(r[1].path).toBe('/Note/Pro/Budget.note');
+    expect(r[1].page).toBe(0);
   });
 
   it('folder / notebook scope filters', () => {
@@ -136,13 +139,18 @@ describe('searchLibraryAdvanced — multi-criteria (v0.25.9)', () => {
       [{type: 'contains', value: 'budget'}],
       {sort: 'date'},
     );
-    expect(byDate.map(h => h.at)).toEqual([30, 10]); // newest first
+    // Newest first; the NAME hit (at 0, feature 2026-08-16) sinks to the end.
+    expect(byDate.map(h => h.at)).toEqual([30, 10, 0]);
     const byNb = searchLibraryAdvanced(
       build(),
       [{type: 'contains', value: 'budget'}],
       {sort: 'notebook'},
     );
-    expect(byNb.map(h => h.name)).toEqual(['Budget.note', 'Cook.note']);
+    expect(byNb.map(h => h.name)).toEqual([
+      'Budget.note', // name hit (feature 2026-08-16)
+      'Budget.note', // content hit
+      'Cook.note',
+    ]);
   });
 
   it('empty / all-blank criteria return nothing', () => {
@@ -338,5 +346,48 @@ describe('p: and approx: operators (v0.64)', () => {
     expect(
       searchLibraryAdvanced(mk(), [{type: 'approx', value: 'bxy'}]),
     ).toHaveLength(0);
+  });
+});
+
+describe('document-name hits (user decision 2026-08-16)', () => {
+  const build = () => {
+    const s = emptyStore();
+    upsertPage(s, '/Note/Perso/Sport/BUJO_T12S10.pdf', 0, entry('indice transformation semaine'), 1);
+    upsertPage(s, '/Note/Pro/Planning.note', 0, entry('mon bujo de travail'), 1);
+    return s;
+  };
+
+  it('a bare word matches the DOCUMENT NAME and ranks first', () => {
+    const r = base(build(), 'bujo');
+    expect(r).toHaveLength(2);
+    expect(r[0].path).toBe('/Note/Perso/Sport/BUJO_T12S10.pdf'); // name hit on top
+    expect(r[0].snippet).toBe('(document name)');
+    expect(r[0].page).toBe(0); // lands on the first transcribed page
+    expect(r[1].path).toBe('/Note/Pro/Planning.note'); // content hit after
+  });
+
+  it('scope filters still apply to name hits (type:)', () => {
+    const r = searchLibraryAdvanced(build(), [
+      {type: 'contains', value: 'bujo'},
+      {type: 'doctype', value: 'note'},
+    ]);
+    expect(r).toHaveLength(1); // the PDF name hit is excluded by type:note
+    expect(r[0].path).toBe('/Note/Pro/Planning.note');
+  });
+
+  it('a page-scoped criterion disables the name interpretation', () => {
+    const r = searchLibraryAdvanced(build(), [
+      {type: 'contains', value: 'bujo'},
+      {type: 'page', value: '5'},
+    ]);
+    expect(r).toHaveLength(0); // no page 5 content match; no name hit either
+  });
+
+  it('accent/case-insensitive on the name too', () => {
+    const s = emptyStore();
+    upsertPage(s, '/Note/Réflexions/Été 2026.note', 0, entry('du texte ici'), 1);
+    const r = base(s, 'ete');
+    expect(r).toHaveLength(1);
+    expect(r[0].snippet).toBe('(document name)');
   });
 });

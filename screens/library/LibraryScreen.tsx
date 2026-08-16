@@ -98,7 +98,8 @@ import {
   readNotePages,
   readPdf,
   readPdfPageVision,
-  renderDocPage,
+  renderDocPageWithMarks,
+  getMarkPagesList,
   syncNotePages,
   upsertTranscript,
   finishVisionLive,
@@ -2168,7 +2169,21 @@ function LibraryScreen({
         // .note gets — rendered via the DOC image pipeline the batch
         // paths already use. One shot, on page open only (renders are
         // heavy; see the generateNotePng starvation note above).
-        renderDocPage(captureBridge(), doc, page)
+        // WITH the user's ink composited (user request 2026-08-16): the
+        // preview shows what the page actually looks like on the device,
+        // annotations included — the same renderDocPageWithMarks the paid
+        // vision passes use. A page with no ink renders plain, and a mark
+        // render failure silently falls back to the printed page.
+        getMarkPagesList(captureBridge(), doc)
+          .catch(() => null)
+          .then(marks =>
+            renderDocPageWithMarks(
+              captureBridge(),
+              doc,
+              page,
+              Array.isArray(marks) && marks.includes(page),
+            ),
+          )
           .then(img => {
             if (pageReq.current === req) {
               setPageImg(img && img.length > 0 ? img : null);
