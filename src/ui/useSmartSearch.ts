@@ -92,10 +92,9 @@ export const useSmartSearch = (
           truncated: active && over,
           zeroHint:
             active && hits.length === 0
-              ? 'No transcribed page matches. Search only covers pages ' +
-                'already read by the AI. A folder or note that is Off or ' +
-                'never synced is invisible here. Set it to Manual/Auto and ' +
-                'Sync to make it searchable.'
+              ? 'No match. Bare words search your transcripts AND document ' +
+                "names; a page's text is searchable once the AI has read " +
+                'it. To make a note readable, set it to Manual/Auto and Sync.'
               : '',
         });
       });
