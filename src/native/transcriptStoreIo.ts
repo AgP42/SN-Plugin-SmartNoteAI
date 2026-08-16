@@ -39,7 +39,6 @@ import {
   sanitizeDocEntry,
   markDocTouched,
   takeTouchedDocs,
-  removeDoc,
   clearDocRespectingLocks,
   sweepEphemeralPages,
 } from '../core/store/transcriptStore';

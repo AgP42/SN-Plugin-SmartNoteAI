@@ -448,6 +448,7 @@ export const recordOwed = async (
         docHash: doc.docHash ?? '',
         docLocked: doc.lock === true,
         pdfCovered: isPdf && (doc.docHash ?? '') !== '',
+        hasPageCount: doc.pageCount !== undefined,
       };
       const total = docPageCount(s, notePath);
       for (let p = 0; p < total; p++) {

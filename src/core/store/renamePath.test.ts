@@ -4,7 +4,6 @@
 import {
   migrateAutoTargets,
   migrateAgentPaths,
-  migrateWantedPaths,
   orphanedModeFor,
 } from './renamePath';
 import type {Agent} from '../agents/agents';
@@ -138,18 +137,5 @@ describe('orphanedModeFor (an Off that survives a rename)', () => {
 
   it('a gone path with no explicit entry is not a candidate', () => {
     expect(orphanedModeFor({}, NEW, [GONE], 'auto', [NEW])).toBeNull();
-  });
-});
-
-describe('migrateWantedPaths', () => {
-  it('moves a standing Sync order to the new path, deduped', () => {
-    expect(migrateWantedPaths([OLD, NEW, '/other.note'], OLD, NEW)).toEqual([
-      NEW,
-      '/other.note',
-    ]);
-  });
-
-  it('no order for this file → null', () => {
-    expect(migrateWantedPaths(['/other.note'], OLD, NEW)).toBeNull();
   });
 });

@@ -99,6 +99,18 @@ export type DocEntry = {
   // the page block); kws = Supernote keywords {p: 0-indexed page, t: text}.
   stars?: number[];
   kws?: Array<{p: number; t: string}>;
+  // PDF completeness truth (simplification lot 1, 2026-08-16): the page count
+  // the whole-file /v1/ocr actually returned, stamped alongside docHash. It is
+  // the PDFs' equivalent of the notes' footer: an INDEPENDENT total the store
+  // can be audited against. With it, a missing entry inside [0, pageCount) of
+  // a covered PDF is provably a CLEARED page (the OCR writes an entry for
+  // every page, blanks included) — repairable per-page Vision debt — where it
+  // used to be indistinguishable from a blank and silently counted 'finished'
+  // (the 2026-08-16 covered-gate hole: Clear one page of a covered PDF and
+  // the engine said "up to date" forever while the Library counted it).
+  // Absent on legacy docs: their missing entries keep the old blank=done
+  // reading until the next OCR pass stamps the truth — no mass re-bill.
+  pageCount?: number;
   // Sync-count redesign (2026-08-14): the ONE authoritative "what does this doc
   // still owe?", written by the ENGINE from its own per-page read decision and
   // READ by the UI, so the count can never disagree with what "Sync now" does.
@@ -204,6 +216,13 @@ export const sanitizeDocEntry = (doc: unknown): DocEntry | null => {
   if (typeof d.stamp === 'string' && d.stamp.length > 0) {
     entry.stamp = d.stamp;
   }
+  if (
+    typeof d.pageCount === 'number' &&
+    Number.isInteger(d.pageCount) &&
+    d.pageCount > 0
+  ) {
+    entry.pageCount = d.pageCount;
+  }
   if (Array.isArray(d.stars)) {
     const stars = d.stars.filter(
       (n): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0,
@@ -296,7 +315,7 @@ export const serializeStore = (store: Store): string => JSON.stringify(store);
 // ---- touched-doc tracking (v0.56 sharded persistence) ----
 // INVARIANT: every mutation of store.docs[path] must either go through
 // docOf() (all the standard writers do) or call markDocTouched(path)
-// explicitly (touchDoc, remapDocPages, removePages, and the rev backfill
+// explicitly (remapDocPages, removePages, and the rev backfill
 // in reading.ts do). The IO layer persists ONLY the touched shards —
 // an unmarked mutation would be visible in memory but silently lost on
 // restart. Deletions are NOT tracked here: the IO layer diffs the doc
@@ -465,13 +484,6 @@ export const makePageEntry = (
   low: low !== undefined && low.length > 0 ? low : undefined,
 });
 
-export const touchDoc = (store: Store, path: string, now: number): void => {
-  const doc = store.docs[path];
-  if (doc) {
-    doc.usedAt = now;
-    markDocTouched(path);
-  }
-};
 
 export const setDocHash = (
   store: Store,
@@ -875,7 +887,10 @@ export const setPageIds = (
 };
 
 // Total pages the library knows for a doc: the structural snapshot when
-// present, else the highest stored entry index + 1 (PDFs, legacy docs).
+// present (notes), the OCR-stamped pageCount when present (PDFs, lot 1),
+// else the highest stored entry index + 1 (legacy docs). Before pageCount,
+// a PDF's total was inferred FROM its own entries — it audited nothing: a
+// cleared last page shrank the doc and every counter agreed on the lie.
 export const docPageCount = (store: Store, path: string): number => {
   const doc = store.docs[path];
   if (!doc) {
@@ -883,7 +898,50 @@ export const docPageCount = (store: Store, path: string): number => {
   }
   const keys = Object.keys(doc.pages).map(Number);
   const byEntries = keys.length > 0 ? Math.max(...keys) + 1 : 0;
-  return Math.max(doc.pageIds?.length ?? 0, byEntries);
+  return Math.max(doc.pageIds?.length ?? 0, doc.pageCount ?? 0, byEntries);
+};
+
+// Stamped at the same site as docHash, from the /v1/ocr response itself —
+// never guessed (lot 1). ONE writer: readPdf's stamp block.
+export const setPdfPageCount = (
+  store: Store,
+  path: string,
+  count: number,
+): void => {
+  if (!Number.isInteger(count) || count <= 0) {
+    return;
+  }
+  const doc = docOf(store, path);
+  if (doc.pageCount !== count) {
+    doc.pageCount = count;
+    markDocTouched(path);
+  }
+};
+
+// The CLEARED pages of a covered PDF: indices inside [0, pageCount) with no
+// entry. Only meaningful when the OCR truth is stamped (pageCount present)
+// AND the printed bytes are covered (docHash set) — an uncovered doc's
+// missing pages belong to the whole-file OCR, not to per-page Vision. A
+// doc-locked PDF is frozen: nothing is owed. Used by pendingVisionPages and
+// the drain collector so a cleared page is REPAIRABLE debt everywhere the
+// engine looks (covered-gate hole, 2026-08-16).
+export const pdfMissingPages = (store: Store, path: string): number[] => {
+  const doc = store.docs[path];
+  if (
+    doc === undefined ||
+    doc.lock === true ||
+    doc.pageCount === undefined ||
+    (doc.docHash ?? '') === ''
+  ) {
+    return [];
+  }
+  const out: number[] = [];
+  for (let p = 0; p < doc.pageCount; p++) {
+    if (doc.pages[String(p)] === undefined) {
+      out.push(p);
+    }
+  }
+  return out;
 };
 
 // v0.37 smart search: refresh a doc's star/keyword snapshot. Returns true
@@ -1109,12 +1167,28 @@ export type PageStage = 'queue' | 'ocr' | 'finished';
 // paid read; an 'ocr' page owes the cheaper Vision leg; 'finished' owes nothing.
 export const pageStage = (
   e: PageEntry | undefined,
-  ctx: {isPdf: boolean; docHash: string; docLocked: boolean; pdfCovered: boolean},
+  ctx: {
+    isPdf: boolean;
+    docHash: string;
+    docLocked: boolean;
+    pdfCovered: boolean;
+    // Lot 1 (2026-08-16): true when the doc carries the OCR-stamped pageCount.
+    // With that truth, the OCR is known to write an entry for EVERY page
+    // (blanks included), so a missing entry of a covered PDF is provably a
+    // CLEARED page — Vision-repairable debt, not a blank.
+    hasPageCount: boolean;
+  },
 ): PageStage => {
   if (e === undefined) {
-    // No entry: a text-less page of a covered PDF is done (the whole-file OCR
-    // ran and found nothing); anything else was never read.
-    return ctx.pdfCovered ? 'finished' : 'queue';
+    // No entry, covered PDF: with the pageCount truth this is a cleared page
+    // → 'ocr' (owes the per-page Vision leg the drain repairs — no re-OCR of
+    // the whole doc). Without it (legacy doc), keep the old reading: the
+    // whole-file OCR ran and found nothing → done. A doc-locked PDF is
+    // frozen either way. Anything not covered was never read at all.
+    if (ctx.pdfCovered) {
+      return ctx.hasPageCount && !ctx.docLocked ? 'ocr' : 'finished';
+    }
+    return 'queue';
   }
   if (e.text.trim().length === 0) {
     return 'finished'; // read and found BLANK (negative cache) — done  [K4]
@@ -1152,6 +1226,7 @@ export const docStageCounts = (
       docHash: doc.docHash ?? '',
       docLocked: doc.lock === true,
       pdfCovered: isPdf && (doc.docHash ?? '') !== '',
+      hasPageCount: doc.pageCount !== undefined,
     };
     for (let p = 0; p < total; p++) {
       const st = pageStage(doc.pages[String(p)], ctx);

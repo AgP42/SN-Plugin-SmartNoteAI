@@ -15,6 +15,7 @@ import {
   readPdf,
   readPdfPageVision,
   finishVisionLive,
+  pendingVisionPages,
   syncNotePages,
   pageStamp,
   isOffForRead,
@@ -1617,5 +1618,129 @@ describe('isOffForRead — an Off decision survives a rename', () => {
     });
     fsMock.listDirNative.mockResolvedValueOnce([]); // [] = empty OR failed
     expect(await isOffForRead('/Notes/Journal.note')).toBe(false);
+  });
+});
+
+// ————— Lot 1+2 (2026-08-16): cleared-page repair & anti-bleed —————
+describe('cleared-page repair (pageCount truth) & anti-bleed gates', () => {
+  // 16 distinct ≥4-char tokens: a substantial host-independent OCR baseline.
+  const RICH_OCR =
+    'transformation indice energie regularite mental comportement semaine ' +
+    'critere positif objectif balance centimetre evolution physique action hebdomadaire';
+  const FOREIGN =
+    'reunion alstom siemens faiveley stadler locomotive retrofit planning ' +
+    'contrat freight direction projet documents techniques securite valider';
+
+  const coveredPdf = (pageCount: number): void => {
+    storeState.store.docs[PDF] = {
+      usedAt: 0,
+      docHash: '123',
+      pageCount,
+      pages: {},
+    };
+  };
+
+  it('pendingVisionPages counts a CLEARED page of a covered PDF — legacy docs unchanged', () => {
+    coveredPdf(3);
+    upsertPage(storeState.store, PDF, 0, entry('', {text: 'k', source: 'medium'}), 1);
+    upsertPage(storeState.store, PDF, 2, entry('', {text: 'k', source: 'medium'}), 1);
+    expect(pendingVisionPages(storeState.store, PDF)).toEqual([1]);
+    delete storeState.store.docs[PDF]!.pageCount; // legacy doc: no truth
+    expect(pendingVisionPages(storeState.store, PDF)).toEqual([]);
+  });
+
+  it('the drain REPAIRS a cleared page: renders it, vision-reads it (empty hint), stores it', async () => {
+    coveredPdf(2);
+    upsertPage(storeState.store, PDF, 0, entry('', {text: 'kept', source: 'medium'}), 1);
+    route({chat: () => chatRes('repaired page text')});
+    const deps = baseDeps();
+    const out = await finishVisionLive(deps, 'key', 'SYS', {kind: 'pdf'});
+    expect(out.read).toBe(1);
+    const e = getPage(storeState.store, PDF, 1)!;
+    expect(e.source).toBe('medium');
+    expect(e.text).toBe('repaired page text');
+    expect(deps.generateDocImage).toHaveBeenCalledTimes(1);
+    expect(pendingVisionPages(storeState.store, PDF)).toEqual([]); // debt settled
+  });
+
+  it('a cleared page whose vision finds NOTHING gets its negative-cache stub back (no re-bill loop)', async () => {
+    coveredPdf(1);
+    route({chat: () => chatRes('')}); // vision ran, nothing there
+    const out = await finishVisionLive(baseDeps(), 'key', 'SYS', {kind: 'pdf'});
+    expect(out.read).toBe(0);
+    const e = getPage(storeState.store, PDF, 0)!;
+    expect(e).not.toBeNull();
+    expect(e.text).toBe('');
+    expect(e.source).toBe('mistral-ocr');
+    expect(e.va).toBe('d:123'); // settled at this docHash
+    expect(pendingVisionPages(storeState.store, PDF)).toEqual([]); // never re-billed
+  });
+
+  it('bleed-gate: vision text sharing NOTHING with a substantial OCR is rejected, page untouched', async () => {
+    upsertPage(storeState.store, PDF, 0, entry('', {text: RICH_OCR}), 1);
+    storeState.store.docs[PDF]!.docHash = '123';
+    route({chat: () => chatRes(FOREIGN)});
+    const out = await finishVisionLive(baseDeps(), 'key', 'SYS', {kind: 'pdf'});
+    expect(out.read).toBe(0);
+    const e = getPage(storeState.store, PDF, 0)!;
+    expect(e.source).toBe('mistral-ocr'); // NOT promoted
+    expect(e.text).toBe(RICH_OCR); // NOT overwritten
+  });
+
+  it('bleed-tripwire: the same content-bearing render for two pages defers the second for FREE', async () => {
+    upsertPage(storeState.store, PDF, 0, entry('', {text: 'aa'}), 1);
+    upsertPage(storeState.store, PDF, 1, entry('', {text: 'bb'}), 1);
+    storeState.store.docs[PDF]!.docHash = '123';
+    route({chat: () => chatRes('short vision')});
+    // Every render returns the SAME >60 KB image — the host-stuck signature.
+    const big = new Uint8Array(60_100).fill(7).buffer;
+    const deps = baseDeps({
+      fetchFn: async () => ({ok: true, arrayBuffer: async () => big}),
+    });
+    const out = await finishVisionLive(deps, 'key', 'SYS', {kind: 'pdf'});
+    expect(out.read).toBe(1); // page 0 read normally
+    expect(getPage(storeState.store, PDF, 1)!.source).toBe('mistral-ocr'); // deferred
+    // The duplicate render never reached the paid API.
+    expect(
+      fetchMock.mock.calls.filter(c => String(c[0]).includes('/chat/')).length,
+    ).toBe(1);
+  });
+
+  it('Redo (readPdfPageVision): a contested vision text is NOT fed back as hint; OCR text still is', async () => {
+    upsertPage(
+      storeState.store,
+      PDF,
+      0,
+      entry('', {text: 'contaminatedwork text from another doc', source: 'medium'}),
+      1,
+    );
+    storeState.store.docs[PDF]!.docHash = '123';
+    route({chat: () => chatRes('clean fresh transcription')});
+    const out = await readPdfPageVision(baseDeps(), 'key', 'SYS', PDF, 0);
+    expect(out.ok).toBe(true);
+    const chatCall = fetchMock.mock.calls.find(c =>
+      String(c[0]).includes('/chat/'),
+    )!;
+    const body = String((chatCall[1] as {body?: unknown})?.body ?? '');
+    expect(body).not.toContain('contaminatedwork'); // no parroting seed
+    expect(getPage(storeState.store, PDF, 0)!.text).toBe(
+      'clean fresh transcription',
+    );
+
+    // …while a trusted OCR text IS still passed (quality preserved).
+    fetchMock.mockClear();
+    upsertPage(
+      storeState.store,
+      PDF,
+      0,
+      entry('', {text: 'trustedocr baseline words', source: 'mistral-ocr'}),
+      1,
+    );
+    route({chat: () => chatRes('improved from ocr')});
+    await readPdfPageVision(baseDeps(), 'key', 'SYS', PDF, 0);
+    const call2 = fetchMock.mock.calls.find(c => String(c[0]).includes('/chat/'))!;
+    expect(String((call2[1] as {body?: unknown})?.body ?? '')).toContain(
+      'trustedocr',
+    );
   });
 });

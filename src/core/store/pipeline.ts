@@ -52,6 +52,7 @@ export const classifyPipeline = (
       docHash: doc?.docHash ?? '',
       docLocked: doc?.lock === true,
       pdfCovered: info.pdfCovered,
+      hasPageCount: doc?.pageCount !== undefined,
     };
     let structQueue = 0;
     let ocr = 0;

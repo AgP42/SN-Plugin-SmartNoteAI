@@ -252,7 +252,7 @@ describe('content self-versioning (v0.58 — the store decides its own fresh sta
     });
     const s = await io.loadStore();
     expect(Object.keys(s.docs)).toEqual([A]); // NOT wiped
-    await io.mutateStore(st => core.touchDoc(st, A, 9));
+    await io.mutateStore(st => core.setStamp(st, A, 'v2:x9'));
     await io.flushStore();
     expect(lastIndexWrite().contentV).toBe(32);
   });

@@ -63,7 +63,6 @@ import {
   setPageIds,
   setDocMeta,
   docMetaEquals,
-  touchDoc,
   remapDocPages,
   markDocTouched,
   invalidateOwed,
@@ -80,7 +79,10 @@ import {
   pdfRenameCandidates,
   adoptRenamedPdfDoc,
   visionSettled,
+  setPdfPageCount,
+  pdfMissingPages,
 } from '../core/store/transcriptStore';
+import {visionMatchesOcr} from '../core/text/visionOverlap';
 import {provenGone, followRename} from './renameFollow';
 
 export const PARALLEL_READS = 4;
@@ -91,6 +93,10 @@ export const PARALLEL_READS = 4;
 // many CONSECUTIVE render failures a pass stops trying: the remaining pages
 // stay pending for a tick under the right host instead of piling errors.
 export const CONSEC_RENDER_BREAK = 3;
+// Anti-bleed tripwire floor (2026-08-16): only content-bearing renders are
+// compared — blank e-ink pages compress far below this and are legitimately
+// pixel-identical across documents.
+export const TRIPWIRE_MIN_B64 = 60_000;
 
 // R1 (audit 2026-07-28): a paid read persists via an 800 ms debounced JS
 // timer plus a flush at the END of the loop. RN freezes JS timers the moment
@@ -719,12 +725,9 @@ export const readNotePages = async (
     return {ok: false, read: 0, failed: [], reason: 'Stopped.'};
   }
   if (todo.length === 0) {
-    // LRU touch only — no visible change: return false so subscribers are
-    // not notified (and the touch rides the next real persist).
-    await mutateStore(s => {
-      touchDoc(s, notePath, Date.now());
-      return false;
-    });
+    // Nothing owed. (The LRU usedAt touch that lived here died with the LRU
+    // eviction itself — lot 0, 2026-08-16: usedAt now moves only on real
+    // writes, so the Library's "updated" reflects content, not passes.)
     return {ok: true, read: 0, failed: []};
   }
   console.log(
@@ -1259,6 +1262,22 @@ export const finishVisionLive = async (
         ocrHints.set(`${path}#${page}`, {text: e.text, low: e.low});
       }
     }
+    // Lot 1 (2026-08-16): CLEARED pages of a covered PDF (missing entries
+    // inside the OCR-stamped pageCount) are Vision debt with no entry to
+    // iterate — collect them here so the drain actually repairs what the
+    // covered gate now routes to it. pdfMissingPages self-guards doc locks;
+    // a missing page cannot carry a page lock (locks live on entries) and
+    // has no settled marker, so only the caller's pageFilter applies.
+    if (isPdf) {
+      for (const page of pdfMissingPages(store, path)) {
+        if (opts?.pageFilter !== undefined && !opts.pageFilter(path, page)) {
+          continue;
+        }
+        const l = byPdf.get(path) ?? [];
+        l.push(page);
+        byPdf.set(path, l);
+      }
+    }
   }
   // Deterministic order per doc, then trim to the caller's budget. Dropped
   // pages are TRUNCATED, not pending: nothing failed, the next tick's drain
@@ -1391,6 +1410,10 @@ export const finishVisionLive = async (
   }
   // PDFs: Vision-only pass (visionPassPdf reuses the stored OCR, no re-OCR).
   let pdfAttempted = false;
+  // One tripwire ledger for the WHOLE drain pass: the cross-DOC repeat is
+  // exactly the host-stuck failure the drain is most exposed to (many docs
+  // rendered under one foreground doc — 2026-08-16 bleed analysis).
+  const seenRenders = new Map<string, string>();
   for (const [pdfPath, pages] of byPdf) {
     if (opts?.shouldStop?.() || pdfRenderBlocked) {
       pending += pages.length;
@@ -1400,6 +1423,7 @@ export const finishVisionLive = async (
     const rr = await visionPassPdf(deps, apiKey, visionSystem, pdfPath, pages, {
       shouldStop: opts?.shouldStop,
       onProgress: done => opts?.onProgress?.(base + done, total),
+      seenRenders,
     });
     await flushStore();
     read += rr.read;
@@ -1741,7 +1765,15 @@ export const readPdfPageVision = async (
       return {ok: false, read: 0, failed: [page], reason: 'render failed'};
     }
     const store = await loadStore();
-    const hint = getPage(store, pdfPath, page)?.text ?? '';
+    const cur = getPage(store, pdfPath, page);
+    // Redo hint fix (2026-08-16): only the /v1/ocr text is a trustworthy hint
+    // (host-independent, read from the file bytes). A previous VISION or
+    // hand-edited text is exactly what the user is contesting with this
+    // explicit re-read — feeding it back as a hint made the model parrot it
+    // ("trust the image wherever they disagree" collapses on a sparse page),
+    // so a contaminated page returned the SAME wrong text on every Redo and
+    // could never self-heal (BUJO p9 incident).
+    const hint = cur?.source === 'mistral-ocr' ? cur.text : '';
     const v = await escalateRead(
       fetchAdapter,
       apiKey,
@@ -1751,6 +1783,17 @@ export const readPdfPageVision = async (
       opts?.signal,
     );
     if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
+      // Same anti-bleed writer gate as the automatic pass (2026-08-16).
+      if (cur?.source === 'mistral-ocr' && !visionMatchesOcr(cur.text, v.text)) {
+        return {
+          ok: false,
+          read: 0,
+          failed: [page],
+          reason:
+            'The rendered image does not match this page — open THIS PDF in ' +
+            'the reader and retry.',
+        };
+      }
       const wrote = await upsertTranscript(
         pdfPath,
         page,
@@ -1879,7 +1922,7 @@ export const pendingVisionPages = (
   if (doc === undefined) {
     return [];
   }
-  return (Object.entries(doc.pages) as [string, PageEntry][])
+  const fromEntries = (Object.entries(doc.pages) as [string, PageEntry][])
     .filter(([, e]) => e.source === 'mistral-ocr' && e.text.trim().length > 0)
     // Locks: same rule as pagesOwedVision, so the tick's covered test and
     // the Sync-now release can never disagree again (round-8 #7).
@@ -1888,8 +1931,15 @@ export const pendingVisionPages = (
     // in EITHER of the PDF marker formats (audit #5).
     .filter(([, e]) => !visionSettled(e, {isPdf: true, docHash: doc.docHash}))
     .map(([k]) => Number(k))
-    .filter(n => Number.isInteger(n))
-    .sort((a, b) => a - b);
+    .filter(n => Number.isInteger(n));
+  // Lot 1 (2026-08-16): a CLEARED page of a covered PDF (missing entry inside
+  // the OCR-stamped pageCount) owes its Vision leg too — this is what makes
+  // the covered gate route it to the drain instead of declaring the doc "up
+  // to date" while the Library counts it forever. Disjoint from fromEntries
+  // (missing = no entry), so a plain concat is exact.
+  return [...fromEntries, ...pdfMissingPages(store, pdfPath)].sort(
+    (a, b) => a - b,
+  );
 };
 
 // ---- the `va` marker: ONE reader, three writers ----------------------
@@ -1919,6 +1969,14 @@ const visionPassPdf = async (
     // fetched; a second divergent fetch treated an SDK error as "no
     // annotations" and read annotated pages without their ink composited.
     annotated?: ReadonlySet<number>;
+    // Anti-bleed tripwire (2026-08-16): image-hash → "path#page" of the first
+    // render that produced it, shared across every doc of one pass. The
+    // host-bound renderer intermittently returns ANOTHER document's page
+    // (device evidence 2026-07-29/31); a second (path,page) yielding the
+    // SAME content-bearing pixels is that failure caught red-handed — the
+    // page is deferred as a FREE render failure (feeds the breaker), never
+    // read into the store.
+    seenRenders?: Map<string, string>;
   },
 ): Promise<{
   read: number;
@@ -2023,6 +2081,34 @@ const visionPassPdf = async (
         }
         continue;
       }
+      // Anti-bleed tripwire (2026-08-16): two different (path,page) requests
+      // yielding pixel-identical CONTENT-BEARING images = the host-bound
+      // renderer is returning the foreground doc's page, not ours. Defer as
+      // a free render failure (feeds the same breaker). The size floor keeps
+      // genuinely identical blank pages from tripping it.
+      if (opts?.seenRenders !== undefined && img.length > TRIPWIRE_MIN_B64) {
+        const h = pageMarkHash(img);
+        const owner = `${pdfPath}#${page}`;
+        const prev = opts.seenRenders.get(h);
+        if (prev !== undefined && prev !== owner) {
+          failed.push(page);
+          renderFailed.push(page); // free failure — no API call was made
+          firstReason =
+            firstReason ??
+            'The renderer returned another page\'s image — deferred.';
+          console.log(
+            '[SmartNoteAI.read]',
+            `bleed-tripwire: render of ${owner} is pixel-identical to ` +
+              `${prev} — deferred, nothing stored`,
+          );
+          if (++consecRenderFails >= CONSEC_RENDER_BREAK) {
+            renderAborted = true;
+            break;
+          }
+          continue;
+        }
+        opts.seenRenders.set(h, owner);
+      }
       consecRenderFails = 0;
       // Phase B: an ANNOTATED page's identity is the hash of the image we
       // just rendered (free). Unchanged pixels never reach the paid model —
@@ -2040,6 +2126,25 @@ const visionPassPdf = async (
         opts?.signal,
       );
       if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
+        // Anti-bleed writer gate (2026-08-16): the page's /v1/ocr text is the
+        // one host-INDEPENDENT truth we hold. A vision result sharing
+        // essentially nothing with a substantial OCR baseline means the
+        // rendered image was another document's page (the BUJO p9 incident)
+        // — refuse the write; the page stays 'mistral-ocr' debt, bounded by
+        // the drain's per-page retry cap.
+        if (cur?.source === 'mistral-ocr' && !visionMatchesOcr(cur.text, v.text)) {
+          failed.push(page);
+          firstReason =
+            firstReason ??
+            'Vision returned another page\'s text — rejected (render mismatch).';
+          console.log(
+            '[SmartNoteAI.read]',
+            `bleed-gate: vision text for ${pdfPath.split('/').pop()} p${
+              page + 1
+            } shares nothing with its OCR — rejected, nothing stored`,
+          );
+          continue;
+        }
         const wrote = await upsertTranscript(
           pdfPath,
           page,
@@ -2089,9 +2194,14 @@ const visionPassPdf = async (
             return false;
           }
           let e = getPage(st, pdfPath, page);
-          if (e === null && annTag !== null) {
-            // An annotated page the whole-doc OCR produced nothing for:
-            // create the negative-cache entry so the marker has a home.
+          if (e === null) {
+            // A page with no entry whose vision came back empty: create the
+            // negative-cache entry so the marker has a home. Annotated pages
+            // always needed this; since lot 1 (2026-08-16) a CLEARED plain
+            // page of a covered PDF is missing-entry Vision debt too, and
+            // without the stub it would never leave pendingVisionPages —
+            // re-billed 3 attempts per session, every session (the exact
+            // 2026-08-02 #8 class this cache exists to prevent).
             const fresh = makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now());
             if (opts?.eph === true) {
               // Audit 2 #3: the twin of the manual writer — an Off-doc
@@ -2203,6 +2313,7 @@ const resumePdfVision = async (
   const rr = await visionPassPdf(deps, apiKey, visionSystem, pdfPath, todo, {
     ...opts,
     ...(annotatedList !== null ? {annotated: new Set(annotatedList)} : {}),
+    seenRenders: new Map<string, string>(),
   });
   // Settle only when the list was read AND every page was actually
   // attempted (annotated ⊆ pending ∪ recheck, so a clean pass covered them
@@ -2348,10 +2459,6 @@ export const readPdf = async (
         !opts?.force &&
         pdfPrintedCovered(store.docs[pdfPath], byteLen)
       ) {
-        await mutateStore(s => {
-          touchDoc(s, pdfPath, Date.now()); // LRU only — see the note branch
-          return false;
-        });
         // Printed bytes covered: no re-OCR ever. The unified resume pass
         // finishes any Vision debt AND re-checks annotated pages when the
         // .mark doorbell moved (Phase B: their per-page pixel hash decides,
@@ -2395,10 +2502,6 @@ export const readPdf = async (
         !opts?.force &&
         pdfPrintedCovered(store.docs[pdfPath], byteLen)
       ) {
-        await mutateStore(s => {
-          touchDoc(s, pdfPath, Date.now()); // LRU only — see the note branch
-          return false;
-        });
         // Printed bytes covered: no re-OCR ever. The unified resume pass
         // finishes any Vision debt AND re-checks annotated pages when the
         // .mark doorbell moved (Phase B: their per-page pixel hash decides,
@@ -2477,6 +2580,16 @@ export const readPdf = async (
       (marksRaw === null || [...lockSkipped].some(pg => marksRaw.includes(pg)));
     await mutateStore(s => {
       setDocHash(s, pdfPath, pdfDocHash(byteLen));
+      // Lot 1 (2026-08-16): stamp the OCR's own page count next to the hash —
+      // the PDF's independent completeness truth. With it, a missing entry
+      // inside the range is provably a CLEARED page (the loop above wrote an
+      // entry for every OCR page, blanks included) and stays repairable
+      // Vision debt instead of silently reading as 'finished'.
+      setPdfPageCount(
+        s,
+        pdfPath,
+        r.pages.reduce((m, p) => Math.max(m, p.page), 0) + 1,
+      );
       const d = s.docs[pdfPath];
       if (d !== undefined && !annotatedSkipped) {
         // The doorbell settles only when no LOCKED annotated page was
@@ -2525,6 +2638,7 @@ export const readPdf = async (
     signal: opts?.signal,
     onProgress: () => opts?.onProgress?.(),
     eph: opts?.eph === true,
+    seenRenders: new Map<string, string>(),
   });
   console.log(
     '[SmartNoteAI.read]',

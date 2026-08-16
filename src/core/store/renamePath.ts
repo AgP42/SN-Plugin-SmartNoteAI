@@ -119,20 +119,3 @@ export const orphanedModeFor = (
     ? {from: cands[0], mode}
     : null;
 };
-
-// A standing "Sync now" order for a path that no longer exists never
-// completes, and it is never pruned (absence of a file is deliberately
-// NOT treated as proof by the engine). Left behind it also keeps the
-// unattended spend cap bypassed for the whole session.
-export const migrateWantedPaths = (
-  wanted: readonly string[],
-  from: string,
-  to: string,
-): string[] | null => {
-  if (!wanted.includes(from)) {
-    return null;
-  }
-  const out = new Set(wanted.filter(p => p !== from));
-  out.add(to);
-  return [...out];
-};
