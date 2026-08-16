@@ -14,6 +14,7 @@
  */
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
+  PixelRatio,
   Image,
   NativeModules,
   PanResponder,
@@ -495,7 +496,18 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // panel now stays mounted-but-hidden while the menu shows.
   const inMenu = view === 'menu';
   return (
-    <View style={[styles.fill, {width: winSize.w, height: winSize.h}]}>
+    <View
+      style={[
+        styles.fill,
+        // winSize is in PIXELS (the native window units); RN styles are in
+        // dp — dividing by the density is what makes the explicit size land
+        // exactly on the window (v1.0.30: the v1.0.29 fix applied px as dp,
+        // so the content laid out ~1.3× too wide and clipped on the right).
+        {
+          width: winSize.w / PixelRatio.get(),
+          height: winSize.h / PixelRatio.get(),
+        },
+      ]}>
       {inMenu ? (
         <MenuScreen
           scale={1}
