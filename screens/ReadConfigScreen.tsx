@@ -216,12 +216,15 @@ function ReadConfigScreen({
         <Text style={[styles.manual, mf]}>
           Every page is read by Mistral OCR 4 and then by Vision
           (ministral-14b), which follows the prompt below. Each page is read
-          the first time you ask about it (or in the background when set to
-          Auto), stored in your library, and reused for free after. PDFs are
-          read by OCR (printed text, correct multi-column order); a PDF page
-          the OCR struggles with is escalated to Vision automatically, with a
-          neutral document prompt (same blocks below, minus the
-          notebook-specific ones).
+          the first time you ask about it (the text right away — the Vision
+          polish completes in the background or on your next Sync), or in
+          the background when set to Auto; stored in your library, and
+          reused for free after. PDFs are
+          read by OCR first (the whole file in one call — printed text,
+          correct multi-column order), then EVERY page gets its Vision pass:
+          it reads schemas, figures and your handwritten annotations
+          composited on the page, with a neutral document prompt (same
+          blocks below, minus the notebook-specific ones).
         </Text>
 
         {/* v0.83.1 (user): a single reset for the WHOLE page — all prompt
@@ -326,18 +329,18 @@ function ReadConfigScreen({
 
         <TouchableOpacity onPress={() => setShowPdfPrompt(v => !v)}>
           <Text style={[styles.section, sf, styles.gapTop]}>
-            {showPdfPrompt ? '▾' : '▸'} Full prompt — PDF pages escalated to
-            Vision
+            {showPdfPrompt ? '▾' : '▸'} Full prompt — the PDF pages' Vision
+            pass
           </Text>
         </TouchableOpacity>
         {showPdfPrompt ? (
           <>
             <Text style={[styles.manual, mf]}>
-              A PDF page the OCR struggles with is often hard PRINT (old scan,
-              dense table), not handwriting, so its Vision pass uses a neutral
-              document version of the prompt: the "(.pdf only)" Role and
-              Fidelity blocks above, no notebook-template block, and your
-              ".note + PDF" blocks exactly as you edited them.
+              A PDF page is PRINT (plus your ink), not notebook handwriting,
+              so its Vision pass uses a neutral document version of the
+              prompt: the "(.pdf only)" Role and Fidelity blocks above, no
+              notebook-template block, and your ".note + PDF" blocks exactly
+              as you edited them.
             </Text>
             <View style={styles.qaCard}>
               <Text style={[styles.manual, mf]} selectable>

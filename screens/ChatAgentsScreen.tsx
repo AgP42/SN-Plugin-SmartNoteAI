@@ -583,7 +583,7 @@ function ChatAgentsScreen({
       <>
         <Text style={[styles.manual, mf]}>
           Any Mistral model works in the field below. The presets are the
-          ones that can use the chat's Web/Calc tools. Default is Small:
+          ones that can use the chat's Web search tool. Default is Small:
           open, cheap and on par with the big ones in our tests.
         </Text>
         <View style={local.modelRow}>
@@ -627,10 +627,9 @@ function ChatAgentsScreen({
           ) : null;
         })()}
         <Text style={[styles.manual, mf, styles.gapTop]}>
-          Web search (~0.01€ per search) and Code interpreter (≈free) are
-          ONE-SHOT buttons in the chat panel, next to Send: arm "Web" or
-          "Calc" and they apply to your NEXT message only. Web answers cite
-          their sources.
+          Web search (~0.01€ per search) is a ONE-SHOT button in the chat
+          panel, next to Send: arm "Web" and it applies to your NEXT message
+          only. Web answers cite their sources.
           {noTools
             ? ' This model does not support tools. Pick Small, Medium or Large to use them.'
             : ''}

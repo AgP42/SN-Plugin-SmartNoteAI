@@ -292,7 +292,8 @@ function KeyAppScreen({
             (text, and images when reading) to Mistral (EU) with your own
             key. Nothing is stored on their servers, and only a paid Mistral
             plan guarantees your data never trains their models. Files set
-            to Off are never sent.
+            to Off are never sent without your explicit one-shot consent
+            (asked in chat, forgotten after the answer).
           </Text>
           <Text style={[styles.modelNote, nf]}>
             Transcripts stay on this device only. This wipes every one of

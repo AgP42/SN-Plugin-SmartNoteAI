@@ -2126,7 +2126,7 @@ const visionPassPdf = async (
         deferredMissing++;
         firstReason =
           firstReason ??
-          'Cleared pages wait for THIS PDF to be open in the reader.';
+          'Cleared pages repair on your next Sync now with THIS PDF open.';
         continue;
       }
       if (isPageLocked(await loadStore(), pdfPath, page)) {

@@ -580,7 +580,7 @@ function LibraryScreen({
       return '⚠️ Mistral rejected the key (401). Free monthly limit reached, or the key is invalid/revoked. Check it on console.mistral.ai, or switch to billing.';
     }
     if (/\b402\b|enable billing|access to this service/i.test(reason)) {
-      return '⚠️ The free Mistral API does not allow Batch (402). Use “Transcribe LIVE (free)”, or enable billing.';
+      return '⚠️ Mistral refused the call: payment required (402). Check your plan and credits on console.mistral.ai.';
     }
     if (/\b429\b|rate limit/i.test(reason)) {
       return 'Rate limit (429). On the FREE tier this is usually the monthly cap (~1300 pages); for a big backlog you need a pay-as-you-go plan on console.mistral.ai. Otherwise it is a per-second limit: give it a minute and retry.';
@@ -664,7 +664,7 @@ function LibraryScreen({
                     ? `: ${wall}`
                     : r.reason
                     ? `: ${r.reason}`
-                    : ' (retries by itself at the next sync).'
+                    : ' (Sync now retries them).'
                 }`
               : '.')
           : wall
@@ -3119,7 +3119,7 @@ function LibraryScreen({
                         })}
                         <Text
                           style={[styles.modelNote, nf, styles.stHint, styles.gapTop]}>
-                          Note sync needs the note open in the background; PDF
+                          Note sync needs a note open in the background; PDF
                           Vision (schemas &amp; handwritten annotations) needs a
                           PDF open in the background.
                         </Text>
@@ -3179,11 +3179,11 @@ function LibraryScreen({
               {treeRows}
               <Text style={[styles.modelNote, nf, styles.gapTop]}>
                 One chip per row sets the mode: Off (never sent to the AI),
-                Manual (read on demand: a Sync button or a chat question), or
+                Manual (read on demand: Sync now; a chat question reads the text only), or
                 Auto (read in the background while the plugin is open). A folder
                 covers every note and PDF under it; a note or PDF can be set on
-                its own. There is a single engine: Mistral OCR, escalating to
-                Vision automatically on hard pages. Setting a chip costs
+                its own. There is a single engine: Mistral OCR, then a Vision
+                pass on every page. Setting a chip costs
                 nothing; you only pay when pages are actually read.
               </Text>
             </>

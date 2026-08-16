@@ -111,7 +111,8 @@ import {
   type Agent,
   type AgentDocBlock,
 } from './src/core/agents/agents';
-import {eurosTotal, FULL_PAGE_READ_CENTS} from './src/core/model/reader';
+import {FULL_PAGE_READ_CENTS} from './src/core/model/reader';
+import {OCR_COST_CENTS} from './src/core/model/ocr';
 import {SRC_LABEL, fmtDay, fmtDateTime, baseName, srcLabelFor, srcLongFor} from './src/ui/labels';
 import {useArmedConfirm} from './src/ui/useArmedConfirm';
 import {gatherContext, parseScope} from './src/native/gatherContext';
@@ -304,7 +305,7 @@ export default function ChatPanel({
     DEFAULT_IMAGE_QUICK_ACTIONS,
   );
   const [agentStats, setAgentStats] = useState<
-    Map<string, {docs: number; read: number; unread: number}>
+    Map<string, {docs: number; read: number; unread: number; unreadPdf: number}>
   >(new Map());
   // Gaps dialog at agent selection: unread pages can be read NOW (paid),
   // or the agent starts with what the store has.
@@ -622,7 +623,10 @@ export default function ChatPanel({
         JSON.stringify(prev) === JSON.stringify(fresh) ? prev : fresh,
       );
       applyLassoSettings(saved);
-      const m = new Map<string, {docs: number; read: number; unread: number}>();
+      const m = new Map<
+        string,
+        {docs: number; read: number; unread: number; unreadPdf: number}
+      >();
       const targets = saved.autoTargets ?? {};
       for (const a of fresh) {
         // Off docs excluded here too (audit 2026-07-19 #5): the gaps
@@ -634,6 +638,10 @@ export default function ChatPanel({
         ).filter(p => effectiveMode(targets, p) !== 'off');
         let read = 0;
         let unread = 0;
+        // PDF pages are billed OCR-only on the gap read (skipVision — agent
+        // reads never pay Vision, 2026-08-16), so the euros quote needs the
+        // split.
+        let unreadPdf = 0;
         for (const p of paths) {
           const d = lib.find(x => x.path === p);
           if (d) {
@@ -641,7 +649,11 @@ export default function ChatPanel({
             if (d.pdfCovered) {
               continue; // whole PDF already covered
             }
-            unread += Math.max(0, d.total - d.read);
+            const u = Math.max(0, d.total - d.read);
+            unread += u;
+            if (/\.pdf$/i.test(p)) {
+              unreadPdf += u;
+            }
           }
         }
         // N3 (2026-08-12): pages PINNED to the agent (a.docPages) ride with and
@@ -671,10 +683,13 @@ export default function ChatPanel({
               read++;
             } else {
               unread++;
+              if (/\.pdf$/i.test(p)) {
+                unreadPdf++;
+              }
             }
           }
         }
-        m.set(a.id, {docs: paths.length + pinnedDocs, read, unread});
+        m.set(a.id, {docs: paths.length + pinnedDocs, read, unread, unreadPdf});
       }
       setAgentStats(m);
     })().catch(() => {});
@@ -1630,10 +1645,16 @@ export default function ChatPanel({
       }
       const stats = agentStats.get(a.id);
       if (stats !== undefined && stats.unread > 0) {
+        // Honest quote (sweep 2026-08-16): the gap read pays notes in full
+        // (OCR + Vision) but PDFs OCR-only (skipVision — agent reads never
+        // pay Vision), so each class is priced at what it actually costs.
+        const noteUnread = stats.unread - stats.unreadPdf;
+        const cents =
+          noteUnread * FULL_PAGE_READ_CENTS + stats.unreadPdf * OCR_COST_CENTS;
         setAgentGapAsk({
           agent: a,
           unread: stats.unread,
-          euros: eurosTotal(stats.unread, FULL_PAGE_READ_CENTS),
+          euros: (Math.round(cents) / 100).toFixed(2),
         });
       }
     },
