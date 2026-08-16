@@ -1717,7 +1717,8 @@ export default function ChatPanel({
             keyState.config.apiKey,
             pdfVision,
             p,
-            {signal: controller.signal},
+            // attended: the user explicitly confirmed this agent read.
+            {signal: controller.signal, attended: true},
           );
           done += Math.max(0, d.total - d.read);
         }

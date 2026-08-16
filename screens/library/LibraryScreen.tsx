@@ -645,6 +645,9 @@ function LibraryScreen({
         assembleVisionPrompt(promptBlocks),
         {
           kind,
+          // User-initiated tap with the matching host verified open —
+          // missing-page repair allowed (fix-audit round 3, 2026-08-16).
+          attendedHint: true,
           onProgress: (d, t) =>
             setActivity({label: 'Vision', done: d, total: t}),
         },
