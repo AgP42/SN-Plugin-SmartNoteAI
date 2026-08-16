@@ -189,7 +189,6 @@ function HomeScreen({
 const local = StyleSheet.create({
   titleRow: {flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8},
   titleIcon: {width: 30, height: 30},
-  openBtn: {backgroundColor: '#000000', borderRadius: 10, paddingVertical: 16, alignItems: 'center'},
   footer: {
     borderTopWidth: 1,
     borderTopColor: '#000000',
@@ -198,8 +197,6 @@ const local = StyleSheet.create({
     paddingBottom: 16,
     backgroundColor: '#ffffff',
   },
-  openBtnOff: {backgroundColor: '#999999'},
-  openText: {color: '#ffffff', fontSize: 17, fontWeight: '700'},
   status: {fontSize: 13, color: '#000000', lineHeight: 19, marginTop: 14, marginBottom: 6},
   navBtn: {marginTop: 12, borderWidth: 2, borderColor: '#000000', borderRadius: 10, backgroundColor: '#ffffff', paddingHorizontal: 14},
   navBtnText: {color: '#000000', fontWeight: '700'},

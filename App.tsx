@@ -79,8 +79,7 @@ export type Screen =
   | 'keyapp'
   | 'read'
   | 'library'
-  | 'analyse'
-  | 'agents';
+  | 'analyse';
 
 // Prop-function types shared with the screens (phase 4): the sub-screen
 // header factory and the generic chip row are built in App (they close
@@ -479,9 +478,6 @@ function App(): React.JSX.Element {
   // floating overlay and closes this view. Placed after openAssistant so
   // it can reference it.
   useEffect(() => {
-    if (bootIntent === 'chat') {
-      openAssistant();
-    }
     const id = setInterval(() => {
       const s = consumeNavIntent();
       if (s === 'library') {
@@ -492,10 +488,6 @@ function App(): React.JSX.Element {
         setScreen('library');
       } else if (s === 'home') {
         setScreen('home');
-      } else if (s === 'menu') {
-        setScreen('menu');
-      } else if (s === 'chat') {
-        openAssistant();
       }
     }, 500);
     return () => clearInterval(id);
@@ -655,7 +647,7 @@ function App(): React.JSX.Element {
   /* ============ 4 · CHAT & AGENTS (unified, v0.59) ============ */
   // 'agents' kept as an alias route: anything still navigating to the
   // old door lands on the same unified screen.
-  if (screen === 'analyse' || screen === 'agents') {
+  if (screen === 'analyse') {
     return (
       <ChatAgentsScreen
         keyState={keyState}

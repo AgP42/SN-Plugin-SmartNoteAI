@@ -2,8 +2,6 @@
 // page — correcting one changed the other, and the untouched one stopped
 // being flagged.
 import {
-  replaceNthWord,
-  containsWord,
   lowAfterFix,
   wordOffsets,
   replaceAtOffset,
@@ -11,47 +9,15 @@ import {
 
 const TEXT = 'Voir avec Lemaire pour le budget, puis relancer Lemaire jeudi.';
 
-describe('replaceNthWord', () => {
-  it('rewrites the SECOND occurrence when the second one was tapped', () => {
-    expect(replaceNthWord(TEXT, 'Lemaire', 1, 'Lemaître')).toBe(
-      'Voir avec Lemaire pour le budget, puis relancer Lemaître jeudi.',
-    );
-  });
-
-  it('rewrites the first when the first was tapped', () => {
-    expect(replaceNthWord(TEXT, 'Lemaire', 0, 'Lemaître')).toBe(
-      'Voir avec Lemaître pour le budget, puis relancer Lemaire jeudi.',
-    );
-  });
-
-  it('leaves the text alone when the ordinal is out of range', () => {
-    expect(replaceNthWord(TEXT, 'Lemaire', 7, 'X')).toBe(TEXT);
-  });
-
-  it('never touches a longer word that merely contains it', () => {
-    expect(replaceNthWord('Lemairent Lemaire', 'Lemaire', 0, 'X')).toBe(
-      'Lemairent X',
-    );
-  });
-
-  it('a correction containing $ is inserted verbatim (no group re-expansion)', () => {
-    expect(replaceNthWord('coût de 100 euros', '100', 0, '$100')).toBe(
-      'coût de $100 euros',
-    );
-  });
-
-  it('respects accents at the boundary', () => {
-    expect(replaceNthWord('réunion réunions', 'réunion', 0, 'point')).toBe(
-      'point réunions',
-    );
-  });
-});
 
 describe('lowAfterFix', () => {
   const low = [{t: 'Lemaire', c: 0.4}, {t: 'budget', c: 0.6}];
 
   it('KEEPS the word flagged while another occurrence is still there', () => {
-    const after = replaceNthWord(TEXT, 'Lemaire', 1, 'Lemaître');
+    // Fix the SECOND occurrence by hand (the by-count helper is gone —
+    // lot A 2026-08-17); the first 'Lemaire' survives.
+    const i = TEXT.indexOf('Lemaire', TEXT.indexOf('Lemaire') + 1);
+    const after = TEXT.slice(0, i) + 'Lemaître' + TEXT.slice(i + 'Lemaire'.length);
     expect(lowAfterFix(low, 'Lemaire', after).map(w => w.t)).toEqual([
       'Lemaire',
       'budget',
@@ -59,46 +25,30 @@ describe('lowAfterFix', () => {
   });
 
   it('drops it once the last occurrence is gone', () => {
-    let after = replaceNthWord(TEXT, 'Lemaire', 1, 'Lemaître');
-    after = replaceNthWord(after, 'Lemaire', 0, 'Lemaître');
-    expect(containsWord(after, 'Lemaire')).toBe(false);
+    const after = TEXT.split('Lemaire').join('Lemaître');
     expect(lowAfterFix(low, 'Lemaire', after).map(w => w.t)).toEqual(['budget']);
   });
 });
 
-// Audit 2026-08-12: MarkdownView keys occurrences case-insensitively and hands
-// out a case-insensitive ordinal. When the same flagged word shows up in mixed
-// case, a case-sensitive recount here reopened the very twice-on-a-page bug.
-describe('mixed case — the ordinal comes from MarkdownView (case-insensitive)', () => {
-  it('corrects the SECOND occurrence even when it is a different case', () => {
-    // "Unsure" (nth 0) … "unsure" (nth 1); the user taps the lowercase twin.
-    expect(replaceNthWord('Unsure about it. It is unsure again.', 'unsure', 1, 'sure')).toBe(
-      'Unsure about it. It is sure again.',
-    );
-  });
-
-  it('corrects the FIRST even when the tapped token is lower than the text', () => {
-    expect(replaceNthWord('Unsure about it.', 'unsure', 0, 'Sure')).toBe(
-      'Sure about it.',
-    );
-  });
-
+// Audit 2026-08-12: MarkdownView keys occurrences case-insensitively. The
+// LIVE check here is lowAfterFix's case-insensitive recount (the by-count
+// correction helpers this block used to pin were deleted in lot A).
+describe('mixed case — lowAfterFix recounts case-insensitively', () => {
   it('KEEPS the word flagged while a differently-cased twin survives', () => {
-    // Fix the lowercase one; "Unsure" (capitalised) is still on the page and
-    // still flagged — it must not silently leave the low list.
-    const low = [{t: 'unsure', c: 0.4}];
-    const after = replaceNthWord('It is unsure. Truly Unsure.', 'unsure', 0, 'sure');
-    expect(after).toBe('It is sure. Truly Unsure.');
-    expect(containsWord(after, 'unsure')).toBe(true);
-    expect(lowAfterFix(low, 'unsure', after).map(w => w.t)).toEqual(['unsure']);
+    const text = 'Budget review: the budget line moved.';
+    const low = [{t: 'budget', c: 0.5}];
+    // Fix only the lower-case twin; "Budget" survives.
+    const after = text.replace('the budget line', 'the spending line');
+    expect(lowAfterFix(low, 'budget', after).map(w => w.t)).toEqual(['budget']);
   });
 
   it('drops the word only once every case-variant occurrence is gone', () => {
-    const low = [{t: 'unsure', c: 0.4}];
-    let after = replaceNthWord('It is unsure. Truly Unsure.', 'unsure', 1, 'Sure');
-    after = replaceNthWord(after, 'unsure', 0, 'sure');
-    expect(containsWord(after, 'unsure')).toBe(false);
-    expect(lowAfterFix(low, 'unsure', after)).toEqual([]);
+    const text = 'Budget review: the budget line moved.';
+    const low = [{t: 'budget', c: 0.5}];
+    const after = text
+      .replace('Budget review', 'Spending review')
+      .replace('the budget line', 'the spending line');
+    expect(lowAfterFix(low, 'budget', after)).toEqual([]);
   });
 });
 

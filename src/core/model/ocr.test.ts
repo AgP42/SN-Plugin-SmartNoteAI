@@ -45,8 +45,8 @@ describe('parseOcrResponse', () => {
     });
     expect(pages).toEqual([
       // no confidence data → 0 words (the diag field, 2026-07-19)
-      {page: 0, text: 'Hello\nWorld', escalate: true, words: 0},
-      {page: 1, text: '', escalate: true, words: 0},
+      {page: 0, text: 'Hello\nWorld', words: 0},
+      {page: 1, text: '', words: 0},
     ]);
   });
   it('tolerates a malformed payload', () => {
@@ -63,7 +63,7 @@ describe('ocrPdf', () => {
     const r = await ocrPdf(fn, 'KEY', 'QUJD');
     expect(r).toEqual({
       ok: true,
-      pages: [{page: 0, text: 'Texte', escalate: true, words: 0}],
+      pages: [{page: 0, text: 'Texte', words: 0}],
     });
     expect(calls[0].url).toContain('/v1/ocr');
     expect(calls[0].body).toContain('mistral-ocr-latest');
@@ -90,7 +90,7 @@ describe('smart path helpers (v0.22.8)', () => {
     expect(out.endsWith('| c |')).toBe(true);
   });
 
-  it('ocrImageSmart: no words → escalate; healthy page → keep OCR markdown', async () => {
+  it('ocrImageSmart: image-only and healthy pages both return the OCR markdown', async () => {
     const mk = (payload: unknown): FetchFn => async () => ({
       ok: true, status: 200, json: async () => payload, text: async () => '',
     });
@@ -98,7 +98,6 @@ describe('smart path helpers (v0.22.8)', () => {
       mk({pages: [{index: 0, markdown: '![img-0.jpeg](img-0.jpeg)',
         confidence_scores: {word_confidence_scores: []}}]}),
       'K', 'IMG');
-    expect(drawing.ok && drawing.escalate).toBe(true);
 
     const healthy = await ocrImageSmart(
       mk({pages: [{index: 0, markdown: 'Bonjour le monde',
@@ -108,10 +107,11 @@ describe('smart path helpers (v0.22.8)', () => {
           {text: ' monde', confidence: 0.97},
         ]}}]}),
       'K', 'IMG');
-    expect(healthy.ok && !healthy.escalate && healthy.text === 'Bonjour le monde').toBe(true);
+    expect(healthy.ok && healthy.text === 'Bonjour le monde').toBe(true);
+    expect(drawing.ok && drawing.text === '').toBe(true);
   });
 
-  it('ocrImageSmart: >30% shaky words → escalate; page markdown is the text', async () => {
+  it('ocrImageSmart: shaky words still return the page markdown as the text', async () => {
     const fn: FetchFn = async () => ({
       ok: true, status: 200,
       json: async () => ({
@@ -124,7 +124,6 @@ describe('smart path helpers (v0.22.8)', () => {
       text: async () => '',
     });
     const r = await ocrImageSmart(fn, 'K', 'IMG');
-    expect(r.ok && r.escalate).toBe(true);
     if (r.ok) {
       expect(r.text).toBe('Vrai texte');
     }

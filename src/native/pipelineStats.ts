@@ -11,26 +11,6 @@ import {
   type PipelineStages,
 } from '../core/store/pipeline';
 
-export const pipelineFromStore = async (
-  trackedTotals: Map<string, TrackedTotal>,
-): Promise<{stages: PipelineStages; oldestOcrDoneAt: number}> => {
-  const store = await loadStore();
-  const stages = classifyPipeline(store, trackedTotals);
-  // Oldest page sitting at "OCR done, vision to retry" — its stored `at`.
-  let oldest = 0;
-  for (const [path] of trackedTotals) {
-    const doc = store.docs[path];
-    if (doc === undefined) {
-      continue;
-    }
-    for (const e of Object.values(doc.pages)) {
-      if (e.source === 'mistral-ocr' && e.text.trim().length > 0) {
-        oldest = oldest === 0 ? e.at : Math.min(oldest, e.at);
-      }
-    }
-  }
-  return {stages, oldestOcrDoneAt: oldest};
-};
 
 // v0.86 (user): the SYNC STATUS is split by document type — notes and PDFs
 // have DIFFERENT host requirements for rendering (note pages render only under

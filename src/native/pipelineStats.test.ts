@@ -13,7 +13,7 @@ jest.mock('../core/store/pipeline', () => ({
   classifyPipeline: (...a: unknown[]) => mockClassify(...a),
 }));
 
-import {pipelineFromStore, pipelineFromStoreSplit} from './pipelineStats';
+import {pipelineFromStoreSplit} from './pipelineStats';
 import type {TrackedTotal} from '../core/store/pipeline';
 
 const STORE = {
@@ -55,22 +55,6 @@ beforeEach(() => {
   mockClassify.mockReturnValue({stage: 'sentinel'});
 });
 
-describe('pipelineFromStore', () => {
-  it('returns the classifier result and the OLDEST non-blank OCR timestamp of tracked docs', async () => {
-    const tracked = new Map([['/n/a.note', tt(false)]]);
-    const r = await pipelineFromStore(tracked);
-    expect(r.stages).toEqual({stage: 'sentinel'});
-    expect(mockClassify).toHaveBeenCalledWith(STORE, tracked);
-    // 200 (ocr deux) — the blank OCR page (at=50) and the vision page
-    // (at=100) do not count.
-    expect(r.oldestOcrDoneAt).toBe(200);
-  });
-
-  it('ignores untracked docs and reports 0 when nothing qualifies', async () => {
-    const r = await pipelineFromStore(new Map([['/ghost.note', tt(false)]]));
-    expect(r.oldestOcrDoneAt).toBe(0);
-  });
-});
 
 describe('pipelineFromStoreSplit', () => {
   it('partitions the tracked map by isPdf and classifies each subset', async () => {

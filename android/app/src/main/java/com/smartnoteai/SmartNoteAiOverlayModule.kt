@@ -147,20 +147,6 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
     private val heartbeatHandler =
         android.os.Handler(android.os.Looper.getMainLooper())
 
-    // v0.79.14 "Sync on-going" bubble — a SEPARATE, lightweight native
-    // window (no React) whose only job is to hold FLAG_KEEP_SCREEN_ON so a
-    // long Auto drain keeps running instead of the device sleeping mid-way.
-    // Tapping it emits SmartNoteAiSyncStop (JS stops the keep-awake drain).
-    // Static for the same close/re-open reason as the overlay above.
-    private var syncView: View? = null
-    private var syncWm: WindowManager? = null
-    private var syncLabel: TextView? = null
-    // Backstop: if JS dies without calling stopSyncAwake, the screen would
-    // stay on forever. A watchdog removes the window on its own; every
-    // start/update renews it.
-    private var syncWatchdog: Runnable? = null
-    private const val SYNC_STOP_EVENT = "SmartNoteAiSyncStop"
-    private const val SYNC_WATCHDOG_MS = 10L * 60_000L
   }
 
   override fun getName(): String = MODULE_NAME
@@ -362,30 +348,6 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
    * Returns `{success, width, height, message}` — same convention as
    * the other methods, so the JS side branches on `success`.
    */
-  // v1.0.31: the size the window ACTUALLY has after layout (the WM may
-  // clamp a request). The JS mirrors its explicit content size from THIS,
-  // never from its own bookkeeping — the ~12px right clip on the Manta was
-  // the difference between the two.
-  @ReactMethod
-  fun getWindowSize(promise: Promise) {
-    UiThreadUtil.runOnUiThread {
-      val v = overlayView
-      if (v == null) {
-        promise.resolve(buildResult(success = false, code = "NOT_OPEN",
-            message = "no overlay window"))
-      } else {
-        // post(): read AFTER the pending layout pass, not the stale values.
-        v.post {
-          val m = Arguments.createMap()
-          m.putBoolean("success", true)
-          m.putInt("width", v.width)
-          m.putInt("height", v.height)
-          promise.resolve(m)
-        }
-      }
-    }
-  }
-
   @ReactMethod
   fun getScreenSize(promise: Promise) {
     val ctx = reactApplicationContext.applicationContext
@@ -577,172 +539,6 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
     // wm.removeView() and ReactRootView.unmountReactApplication()
     // both touch the view hierarchy and must run on the main thread.
     UiThreadUtil.runOnUiThread { closeOnUiThread(promise) }
-  }
-
-  // -------------------------------------------------------------------
-  // "Sync on-going" keep-awake bubble (v0.79.14, user request)
-  // -------------------------------------------------------------------
-
-  @ReactMethod
-  fun startSyncAwake(label: String, promise: Promise) {
-    UiThreadUtil.runOnUiThread { startSyncAwakeOnUiThread(label, promise) }
-  }
-
-  @ReactMethod
-  fun updateSyncAwake(label: String, promise: Promise) {
-    UiThreadUtil.runOnUiThread {
-      val tv = syncLabel
-      if (tv != null) {
-        tv.text = label
-        renewSyncWatchdog()
-        promise.resolve(buildResult(true, "OK", "updated"))
-      } else {
-        promise.resolve(buildResult(false, "NOT_OPEN", "no sync bubble"))
-      }
-    }
-  }
-
-  @ReactMethod
-  fun stopSyncAwake(promise: Promise) {
-    UiThreadUtil.runOnUiThread {
-      val removed = removeSyncBubble()
-      promise.resolve(
-          buildResult(true, if (removed) "REMOVED" else "NONE", "stopped"))
-    }
-  }
-
-  private fun startSyncAwakeOnUiThread(label: String, promise: Promise) {
-    // Already up: just update the text (one window, renew watchdog).
-    val existing = syncLabel
-    if (syncView != null && existing != null) {
-      existing.text = label
-      renewSyncWatchdog()
-      promise.resolve(buildResult(true, "ALREADY_OPEN", "sync bubble already up"))
-      return
-    }
-    val appContext = reactApplicationContext.applicationContext
-    val view = buildSyncBubbleView(appContext, label)
-
-    // Reuse the same window-type fallback ladder as the main overlay.
-    val activity = currentActivity
-    if (activity != null) {
-      for (type in listOf(TYPE_APPLICATION_PANEL, TYPE_APPLICATION_ATTACHED_DIALOG)) {
-        if (addSyncView(view, type, activity.windowManager, activity)) {
-          promise.resolve(buildResult(true, "OK", "sync bubble up (sub-window)"))
-          return
-        }
-      }
-    }
-    val systemWm = appContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-    if (systemWm != null) {
-      for (type in listOf(
-          TYPE_APPLICATION_OVERLAY, TYPE_PHONE, TYPE_SYSTEM_ALERT, TYPE_TOAST)) {
-        if (addSyncView(view, type, systemWm, null)) {
-          promise.resolve(buildResult(true, "OK", "sync bubble up (system)"))
-          return
-        }
-      }
-    }
-    promise.resolve(buildResult(false, "ADD_VIEW_FAILED", "could not show the sync bubble"))
-  }
-
-  private fun addSyncView(
-      view: View, type: Int, wm: WindowManager, tokenSource: Activity?,
-  ): Boolean {
-    val flags = (
-        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-        or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-    )
-    val params = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.WRAP_CONTENT,
-        type, flags, PixelFormat.TRANSLUCENT,
-    )
-    params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-    params.y = dp(12)
-    if (tokenSource != null) {
-      params.token = tokenSource.window.decorView.windowToken
-    }
-    return try {
-      wm.addView(view, params)
-      syncView = view
-      syncWm = wm
-      renewSyncWatchdog()
-      Log.i(TAG, "[SMARTPAPER_OVERLAY] sync bubble added ($type)")
-      true
-    } catch (e: Throwable) {
-      Log.w(TAG, "[SMARTPAPER_OVERLAY] sync bubble $type failed: ${e.message}")
-      false
-    }
-  }
-
-  private fun buildSyncBubbleView(context: Context, label: String): View {
-    val bg = GradientDrawable().apply {
-      shape = GradientDrawable.RECTANGLE
-      setColor(Color.WHITE)
-      setStroke(dp(2), Color.BLACK)
-      cornerRadius = dp(18).toFloat()
-    }
-    val tv = TextView(context).apply {
-      tag = "syncLabel" // v0.88: findable again after a failed removeView
-      text = label
-      textSize = 14f
-      setTextColor(Color.BLACK)
-      setPadding(dp(16), dp(9), dp(16), dp(9))
-      background = bg
-    }
-    tv.setOnClickListener {
-      // Ask JS to stop the keep-awake drain; JS then calls stopSyncAwake.
-      try {
-        reactApplicationContext
-            .getJSModule(com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            .emit(SYNC_STOP_EVENT, null)
-      } catch (e: Throwable) {
-        Log.w(TAG, "[SMARTPAPER_OVERLAY] sync stop emit: ${e.message}")
-      }
-      // Remove now for responsiveness (the JS stop is idempotent).
-      removeSyncBubble()
-    }
-    syncLabel = tv
-    return tv
-  }
-
-  private fun renewSyncWatchdog() {
-    syncWatchdog?.let { heartbeatHandler.removeCallbacks(it) }
-    val r = Runnable {
-      Log.w(TAG, "[SMARTPAPER_OVERLAY] sync bubble watchdog fired — removing")
-      removeSyncBubble()
-    }
-    syncWatchdog = r
-    heartbeatHandler.postDelayed(r, SYNC_WATCHDOG_MS)
-  }
-
-  private fun removeSyncBubble(): Boolean {
-    syncWatchdog?.let { heartbeatHandler.removeCallbacks(it) }
-    syncWatchdog = null
-    val view = syncView ?: return false
-    val wm = syncWm
-    syncView = null
-    syncWm = null
-    syncLabel = null
-    if (wm == null) return false
-    return try {
-      wm.removeView(view)
-      true
-    } catch (e: Throwable) {
-      Log.w(TAG, "[SMARTPAPER_OVERLAY] removeSyncBubble: ${e.message}")
-      if (view.isAttachedToWindow) {
-        syncView = view
-        syncWm = wm
-        // v0.88 (audit): syncLabel must come back too — without it the next
-        // startSyncAwake missed the reuse path, added a SECOND bubble and
-        // orphaned this one with FLAG_KEEP_SCREEN_ON (device never sleeps).
-        syncLabel = view.findViewWithTag("syncLabel") as? android.widget.TextView
-      }
-      false
-    }
   }
 
   // Open a file in the SYSTEM reader so its app is running and can host the
@@ -1178,7 +974,7 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
   /**
    * POST a JSON body whose __FILE_B64__ placeholder is filled with the
    * base64 of a local file — entirely natively (v0.67, the LIVE-read
-   * twin of the batch pipeline's appendBatchLine): the 0.5-1 MB render
+   * twin of the removed batch pipeline's file-embedder): the 0.5-1 MB render
    * PNG never crosses the JS thread anymore. The response body (small
    * JSON) is returned as a string. Transport errors resolve
    * success=false; HTTP errors resolve success=true with their status —
@@ -1274,45 +1070,7 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
    * (device report 2026-07-19 evening). ReactMethods run on the
    * NativeModules thread: off both the UI and JS threads.
    */
-  /**
-   * NATIVE batch-file builder (v0.65 "pipeline"): append one JSONL line
-   * to `filePath`, embedding `dataFilePath`'s bytes base64-encoded in
-   * place of the __FILE_B64__ placeholder of `template`. The JS thread
-   * used to base64 each 0.5-1 MB render, join a ~20 MB JSONL, base64
-   * THAT (~27 MB, pure JS loop) and push it through the bridge — the
-   * "UI buried during background jobs" root. Now only ~1 KB templates
-   * and file paths cross the bridge. deleteAfter removes the data file
-   * (render scratch) once embedded.
-   */
-  @ReactMethod
-  fun appendBatchLine(filePath: String, template: String, dataFilePath: String?,
-                      deleteAfter: Boolean, promise: Promise) {
-    try {
-      val line = if (dataFilePath != null) {
-        val data = java.io.File(dataFilePath)
-        if (!data.exists()) {
-          promise.resolve(buildResult(success = false, code = "DATA_NOT_FOUND",
-              message = "No file at $dataFilePath"))
-          return
-        }
-        val b64 = android.util.Base64.encodeToString(data.readBytes(), android.util.Base64.NO_WRAP)
-        val out = template.replace("__FILE_B64__", b64)
-        if (deleteAfter) data.delete()
-        out
-      } else template
-      java.io.FileOutputStream(java.io.File(filePath), true).use {
-        it.write(line.toByteArray(Charsets.UTF_8))
-        it.write('\n'.code)
-      }
-      promise.resolve(buildResult(success = true, code = "OK", message = "appended"))
-    } catch (e: Throwable) {
-      val msg = "${e.javaClass.simpleName}: ${e.message}"
-      Log.e(TAG, "[SMARTPAPER_OVERLAY] appendBatchLine: $msg", e)
-      promise.resolve(buildResult(success = false, code = "APPEND_FAILED", message = msg))
-    }
-  }
-
-  /** System clipboard text (v0.64) — the chat input's Paste button. */
+    /** System clipboard text (v0.64) — the chat input's Paste button. */
   @ReactMethod
   fun getClipboardText(promise: Promise) {
     UiThreadUtil.runOnUiThread {
@@ -1589,50 +1347,7 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  /**
-   * Crop a rendered page PNG to a rectangle and return it base64 (v0.73,
-   * lasso→chat): the lasso rect (page coordinates) is cropped out of the
-   * page render so the chat's vision model receives ONLY the selection.
-   * Coordinates are clamped to the bitmap so an out-of-bounds rect can't
-   * throw. Returns {success, data} with the base64 PNG.
-   */
-  @ReactMethod
-  fun cropPngToBase64(path: String, x: Double, y: Double,
-                      w: Double, h: Double, promise: Promise) {
-    Thread {
-      try {
-        val src = android.graphics.BitmapFactory.decodeFile(path)
-        if (src == null) {
-          promise.resolve(buildResult(success = false, code = "DECODE_FAILED",
-              message = "Not a decodable image: $path"))
-          return@Thread
-        }
-        val cx = x.toInt().coerceIn(0, src.width - 1)
-        val cy = y.toInt().coerceIn(0, src.height - 1)
-        val cw = w.toInt().coerceIn(1, src.width - cx)
-        val ch = h.toInt().coerceIn(1, src.height - cy)
-        val crop = android.graphics.Bitmap.createBitmap(src, cx, cy, cw, ch)
-        val baos = java.io.ByteArrayOutputStream()
-        crop.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, baos)
-        val b64 = android.util.Base64.encodeToString(
-            baos.toByteArray(), android.util.Base64.NO_WRAP)
-        if (crop !== src) {
-          crop.recycle()
-        }
-        src.recycle()
-        val map = Arguments.createMap()
-        map.putBoolean("success", true)
-        map.putString("data", b64)
-        promise.resolve(map)
-      } catch (e: Throwable) {
-        val msg = "${e.javaClass.simpleName}: ${e.message}"
-        Log.e(TAG, "[SMARTPAPER_OVERLAY] cropPngToBase64: $msg", e)
-        promise.resolve(buildResult(success = false, code = "CROP_FAILED", message = msg))
-      }
-    }.start()
-  }
-
-  /**
+    /**
    * External storage volumes (v0.52, SD-card discovery plan B): the
    * PluginHost runtime view of /storage does NOT list mounted cards
    * (device-verified 2026-07-18 — listDir("/storage") came back without
@@ -1932,7 +1647,6 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
       try {
         stopHeartbeat()
         removeOverlay()
-        removeSyncBubble()
       } catch (e: Throwable) {
         Log.w(TAG, "[SMARTPAPER_OVERLAY] invalidate cleanup: ${e.message}")
       }

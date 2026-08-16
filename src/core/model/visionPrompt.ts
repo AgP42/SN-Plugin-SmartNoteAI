@@ -164,10 +164,3 @@ export const assemblePdfVisionPrompt = (
     .filter(t => t.length > 0)
     .join('\n\n');
 
-// Whether a block currently differs from its default (for a "reset" affordance).
-export const isBlockCustom = (
-  b: PromptBlock,
-  overrides: PromptOverrides,
-): boolean =>
-  typeof overrides[b.id] === 'string' &&
-  overrides[b.id].trim() !== b.default.trim();

@@ -38,20 +38,16 @@ installLogCapture();
 // freeze-proof: resolved by the native heartbeat when RN froze JS timers
 // (audit 2026-07-30 C2 — a frozen pacing sleep wedged the chat forever).
 installHybridSleep();
-import {setNavIntent} from './src/native/navIntent';
 import {captureLassoImage} from './src/native/lassoCapture';
 import {setLassoSeed} from './src/native/lassoSeed';
 import {PANEL, applyScreenSize, menuSizeFor, menuOrigin} from './src/ui/panelConfig';
 import {setOverlayView} from './src/native/overlayView';
 
-// Two sidebar entries (v0.79.13, user request — the standalone Library
-// toolbar button was removed; open the Library from the config Home door
-// instead): id 100 opens the config (home), id 102 the floating Chat.
-// Both are type 1 (sidebar) / showType 1 (host opens our UI on press);
-// each drops a nav intent App reads on mount (config→home, Chat→open the
-// overlay and close the config view).
+// One sidebar entry (id 100) opens the hub menu overlay; the lasso entry
+// (id 200) captures the selection and opens the chat. (The old id-102
+// "Chat" sidebar entry is gone since v0.85 — lot A 2026-08-17 removed its
+// dead constant and the comment that wrongly claimed it still routed.)
 const BUTTON_ID = 100;
-const CHAT_BUTTON_ID = 102;
 // Lasso toolbar entry (type 2, v0.73): "Ask SmartNote AI" — captures the
 // selection as a cropped PNG and opens the chat with it attached.
 const LASSO_BUTTON_ID = 200;
@@ -191,11 +187,9 @@ PluginManager.registerButtonListener({
 const buttonIcon = Image.resolveAssetSource(require('./assets/icon.png')).uri;
 // v0.85: ONE toolbar entry → the hub menu (Assistant / Library / transcripts /
 // Sync / Config / Manual). The old second "Chat" entry is gone; the assistant
-// is one tap from the menu. CHAT_BUTTON_ID is kept as a dead alias so any
-// lingering intent still routes to the overlay.
+// is one tap from the menu.
 // showType 0: the host opens no UI of its own — we open the compact MENU
-// overlay ourselves from onButtonPress (like the lasso entry). CHAT_BUTTON_ID
-// is gone; the assistant is one tap inside the menu.
+// overlay ourselves from onButtonPress (like the lasso entry).
 PluginManager.registerButton(1, ['NOTE', 'DOC'], {
   id: BUTTON_ID,
   name: 'SmartNote AI Menu',

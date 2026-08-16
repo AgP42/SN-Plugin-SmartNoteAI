@@ -297,12 +297,10 @@ export default function ChatPanel({
   // per-agent doc stats for the card ("42 p · 3 not synced").
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentId, setAgentId] = useState<string | null>(null);
-  // v0.81 lasso mode: the "there is an image" directive (from settings) +
-  // the image quick actions (shown only when an image is in context). Read
-  // fresh in send(); these mounted copies just mirror config edits.
-  const [lassoDirective, setLassoDirective] = useState<string>(
-    DEFAULT_LASSO_DIRECTIVE,
-  );
+  // v0.81 lasso mode: the image quick actions (shown only when an image is
+  // in context). The lasso DIRECTIVE has no mirror state (lot A 2026-08-17:
+  // it was written on every settings change and never read — send() reads
+  // settings fresh).
   const [imageQuickActions, setImageQuickActions] = useState<QuickActionItem[]>(
     DEFAULT_IMAGE_QUICK_ACTIONS,
   );
@@ -552,11 +550,6 @@ export default function ChatPanel({
       lassoDirective?: string;
       imageQuickActions?: QuickActionItem[];
     }): void => {
-      setLassoDirective(
-        typeof saved.lassoDirective === 'string'
-          ? saved.lassoDirective
-          : DEFAULT_LASSO_DIRECTIVE,
-      );
       setImageQuickActions(
         // Review 2026-08-01 #9: an explicitly emptied list must stay empty
         // here too. Only an ABSENT field means "use the defaults".

@@ -217,7 +217,6 @@ export const makeStyles = (scale: number, btnScale: number) =>
     gap: 6,
     marginTop: 10,
   },
-  ctxAddedList: {marginTop: 10, gap: 4},
   // v0.80.0 (audit H1): hard cap so a 100-page add can't outgrow the sheet.
   lassoPreview: {
     width: '100%',
@@ -262,7 +261,6 @@ export const makeStyles = (scale: number, btnScale: number) =>
   ctxChipText: {fontSize: 12 * scale, color: '#000000'},
   ctxChipTextOn: {color: '#ffffff'},
   // "Added from search" section title (context sheet).
-  ctxAdded: {fontSize: 11 * scale, fontWeight: '600', color: '#000000'},
   rangeInputs: {flexDirection: 'row', alignItems: 'center', gap: 4},
   rangeInput: {
     borderWidth: 1,

@@ -27,20 +27,10 @@ const wordRe = (word: string, global: boolean): RegExp =>
     global ? 'gi' : 'i',
   );
 
-export const replaceNthWord = (
-  text: string,
-  word: string,
-  nth: number,
-  replacement: string,
-): string => {
-  let seen = 0;
-  return text.replace(wordRe(word, true), (m, p1: string) =>
-    seen++ === nth ? p1 + replacement : m,
-  );
-};
-
-export const containsWord = (text: string, word: string): boolean =>
-  wordRe(word, false).test(text);
+// (replaceNthWord / containsWord — the original by-count correction —
+// deleted in lot A 2026-08-17: superseded by the K3 masked-offset path
+// below precisely because by-count on raw markdown hit table cells the
+// user never touched.)
 
 // Same-LENGTH mask (2026-08-12, K3): replace every character inside a fenced
 // code block, a markdown table (header + separator + rows) or an inline-code

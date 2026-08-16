@@ -27,13 +27,6 @@ export const OCR_MODEL = 'mistral-ocr-latest';
 // EURO cents per page (official list 2026-07-11: 3.5 €/1000).
 export const OCR_COST_CENTS = 0.35;
 
-// Escalate when more than this share of words sits below 0.8 confidence.
-// v0.38.1: lowered 30 → 15 (user decision). This now only gates the PDF
-// path — .note pages ALWAYS escalate to Vision (v0.38), so the flag is
-// unused there. 15% catches borderline handwritten/annotated PDF pages
-// (a printed page still sits well under it and stays OCR-only, cheap).
-export const ESCALATE_PCT = 15;
-
 /* ---------------- shared parsing helpers ---------------- */
 
 type RawTable = {id?: unknown; content?: unknown};
@@ -84,17 +77,13 @@ export const MAX_LOW_WORDS = 60;
 
 export type LowWordScore = {t: string; c: number};
 
-// THE escalation rule, in one place (it was written twice — audit
-// 2026-07-20): no word scores at all, or too many low-confidence ones.
-const shouldEscalate = (stats: {
-  words: number;
-  pctLow: number | null;
-}): boolean =>
-  stats.words === 0 || (stats.pctLow !== null && stats.pctLow > ESCALATE_PCT);
+// (The old escalate/ESCALATE_PCT machinery is gone — lot A 2026-08-17:
+// every page gets its Vision pass systematically since v0.38/Option A,
+// nothing ever read the flag.)
 
 const wordStats = (
   page: RawPage,
-): {words: number; pctLow: number | null; lowWords: LowWordScore[]} => {
+): {words: number; lowWords: LowWordScore[]} => {
   const raw = page.confidence_scores?.word_confidence_scores ?? [];
   const words = raw.filter(
     w =>
@@ -103,12 +92,11 @@ const wordStats = (
       !['#', '-', ':', '!', '?', '.', ','].includes(w.text.trim()),
   );
   if (words.length === 0) {
-    return {words: 0, pctLow: null, lowWords: []};
+    return {words: 0, lowWords: []};
   }
   const low = words.filter(w => Number(w.confidence) < 0.8);
   return {
     words: words.length,
-    pctLow: (low.length / words.length) * 100,
     lowWords: low
       .slice(0, MAX_LOW_WORDS)
       .map(w => ({
@@ -130,7 +118,6 @@ export const parseOcrResponse = (data: unknown): OcrPage[] => {
       out.push({
         page: raw.index,
         text: mergeTables(cleanMarkdown(raw.markdown), raw.tables),
-        escalate: shouldEscalate(stats),
         low: stats.lowWords.length > 0 ? stats.lowWords : undefined,
         // Diag 2026-07-19 (vanished underlines): how many word scores
         // the API actually returned — 0 with text present means the
@@ -145,7 +132,6 @@ export const parseOcrResponse = (data: unknown): OcrPage[] => {
 export type OcrPage = {
   page: number;
   text: string;
-  escalate?: boolean;
   low?: LowWordScore[];
   // Word-confidence scores the API returned for this page (diag
   // 2026-07-19): 0 + non-empty text ⇒ the field is absent server-side.
@@ -218,9 +204,7 @@ export type SmartOcrResult =
   | {
       ok: true;
       text: string;
-      escalate: boolean;
       words: number;
-      pctLow: number | null;
       lowWords: LowWordScore[];
     }
   | {ok: false; reason: string};
@@ -242,14 +226,10 @@ export const ocrImageSmart = async (
   // output"). The glossary rides on the vision escalation, not here — the
   // annotation stage was dropped 2026-07-15 (JSON-prone, net-zero gain).
   const text = mergeTables(cleanMarkdown(String(page0.markdown ?? '')), page0.tables);
-  const escalate =
-    shouldEscalate(stats);
   return {
     ok: true,
     text,
-    escalate,
     words: stats.words,
-    pctLow: stats.pctLow,
     lowWords: stats.lowWords,
   };
 };

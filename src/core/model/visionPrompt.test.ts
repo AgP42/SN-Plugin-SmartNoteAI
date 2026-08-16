@@ -2,7 +2,6 @@ import {
   assemblePdfVisionPrompt,
   PROMPT_BLOCKS,
   assembleVisionPrompt,
-  isBlockCustom,
 } from './visionPrompt';
 
 describe('assembleVisionPrompt', () => {
@@ -73,13 +72,3 @@ describe('assemblePdfVisionPrompt (PDF escalation variant)', () => {
   });
 });
 
-describe('isBlockCustom', () => {
-  const money = PROMPT_BLOCKS.find(b => b.id === 'money')!;
-  it('false when absent or equal to default', () => {
-    expect(isBlockCustom(money, {})).toBe(false);
-    expect(isBlockCustom(money, {money: money.default})).toBe(false);
-  });
-  it('true when the override differs', () => {
-    expect(isBlockCustom(money, {money: 'dollars'})).toBe(true);
-  });
-});
