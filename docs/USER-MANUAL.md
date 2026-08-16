@@ -34,8 +34,9 @@ Ministral Vision, guided by your glossary. Each page's provenance shows
 which was used: "Mistral OCR" or "Mistral OCR + Vision". Cost ≈3.5€/1000
 pages (the bare-OCR price; the vision re-read of the few hard pages adds a
 little). **PDFs** use the same engine — the whole PDF in one call, correct
-reading order on any layout; only the printed text is read (handwritten
-annotations on a PDF are not captured yet).
+reading order on any layout. Handwritten annotations on a PDF **are**
+captured: annotated pages get a Vision read with your ink composited, and
+are re-checked automatically when you write on them again.
 
 ### Modes — per folder or note, set in the Library
 
@@ -99,7 +100,30 @@ which). A "Sync now" reads what it can in one pass; if a big backlog remains,
 the counts show what is left — tap Sync now again. No page stays OCR-only:
 pending Vision passes run automatically as soon as the right app is open.
 
+- **Cleared pages repair safely.** If you clear one page of an already-read
+  PDF, it shows as pending again and is re-read on your next explicit Sync
+  (or Library action) **with that PDF open in the reader** — the one
+  condition under which the page image cannot be confused with another
+  document's. Background passes never guess.
+- **Wrong-image protection.** A Vision result that doesn't match the page
+  it was asked about (a rare renderer mix-up) is rejected instead of
+  stored; the page keeps its safe OCR text. To force a fresh read: open
+  that PDF and use "Redo AI" on the page.
+- **Self-cleaning counts.** Deleting a file on the device makes its
+  leftover "to read" count disappear by itself after a few background
+  passes — no manual cleanup.
+- **Moving vs renaming.** Moving or copying a PDF (same file name) keeps
+  its transcripts for free. **Renaming** it counts as a new document: it
+  is re-read once.
+
 ## CHAT
+
+**Chat answers come from your stored transcripts, instantly.** A chat
+question never triggers a Vision pass: if the document changed since its
+last read, only the fast OCR runs so the answer has fresh text; the Vision
+quality catch-up happens in the background or on your next Sync — never
+behind a chat question. Asking about an unread document still asks for
+confirmation above 100 pages (OCR price only).
 
 Ask any Mistral model about the current page, a page range or the whole
 note. The presets are the models that can drive the **Tools** (web search,
@@ -112,6 +136,17 @@ smaller ones (Ministral, Nemo) cannot run the connectors.
 - **Tools**: the model decides on its own, question by question, whether to
   use them; web answers cite their sources. ≈0.01€ per web search.
 - **Quick actions**: editable one-tap prompts shown in the panel.
+
+## SEARCH & the Library
+
+Typing a bare word in the search field looks through your transcripts
+**and document names**: "bujo" finds `BUJO_T12S10.pdf` even if no page
+contains the word — the name match appears on top as "(document name)".
+Prefixes still scope precisely: `n:` name only, `f:` folder,
+`type:note|pdf`, `p:8`, `star:`, `kw:`…
+
+The "Original page" preview of a PDF page shows your handwritten
+annotations composited on the printed page.
 
 ## The reading model
 
