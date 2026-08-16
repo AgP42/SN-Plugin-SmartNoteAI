@@ -1717,8 +1717,10 @@ export default function ChatPanel({
             keyState.config.apiKey,
             pdfVision,
             p,
-            // attended: the user explicitly confirmed this agent read.
-            {signal: controller.signal, attended: true},
+            // skipVision (user decision 2026-08-16): agent reads, like chat
+            // sends, never pay vision — OCR text answers; the backlog
+            // belongs to the drain/Sync.
+            {signal: controller.signal, skipVision: true},
           );
           done += Math.max(0, d.total - d.read);
         }

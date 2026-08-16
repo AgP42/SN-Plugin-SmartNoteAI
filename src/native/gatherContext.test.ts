@@ -13,6 +13,7 @@ jest.mock('./capture', () => ({
 }));
 jest.mock('./reading', () => ({
   isNotePath: (p: string) => /\.note$/i.test(p),
+  markFilePath: (p: string) => `${p}.mark`,
   pagesNeedingRead: jest.fn(async (_d: unknown, _p: string, w: number[]) => w),
   readNotePages: jest.fn(async () => ({ok: true, read: 1, failed: []})),
   readPdf: jest.fn(async () => ({ok: true, read: 1, failed: []})),
@@ -22,6 +23,7 @@ jest.mock('./reading', () => ({
 }));
 jest.mock('./noteTranscripts', () => ({
   readStoredTranscripts: jest.fn(async () => new Map()),
+  readFileSize: jest.fn(async () => null),
 }));
 jest.mock('./transcriptStoreIo', () => ({
   isDegradedLoad: jest.fn(() => false),
@@ -126,4 +128,27 @@ describe('gatherContext', () => {
     expect(mutateStore).not.toHaveBeenCalled();
     expect(flushStore).not.toHaveBeenCalled();
   });
+});
+
+// User decision 2026-08-16: the chat path NEVER pays vision. A covered PDF
+// answers instantly from the store; a changed one runs OCR only — readPdf is
+// always called with skipVision so the resume can never drain the backlog
+// behind the chat banner (device logs: "PDF resume: 15/35" behind a 0/1).
+it('PDF chat: readPdf is called with skipVision (no vision resume ever)', async () => {
+  const readPdfMock = jest.requireMock('./reading').readPdf as jest.Mock;
+  const g = await gatherContext(
+    deps,
+    {notePath: '/Document/d.pdf', page: 0, totalPages: 3},
+    parseScope('page', '1', '1'),
+    'q',
+    'a',
+    'key',
+    baseOpts,
+  );
+  expect(g.kind).toBe('ok');
+  expect(readPdfMock).toHaveBeenCalledTimes(1);
+  expect(readPdfMock.mock.calls[0][3]).toBe('/Document/d.pdf');
+  expect(readPdfMock.mock.calls[0][4]).toEqual(
+    expect.objectContaining({skipVision: true}),
+  );
 });

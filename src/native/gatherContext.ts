@@ -19,7 +19,6 @@ import {
   readNotePages,
   readPdf,
   pageTextsFromStore,
-  pendingVisionPages,
   markFilePath,
   pdfPrintedCovered,
   pdfMarkSzOf,
@@ -33,7 +32,8 @@ import {
   isDocReadOnly,
 } from './transcriptStoreIo';
 import {removePages} from '../core/store/transcriptStore';
-import {eurosTotal, READ_COST_CENTS, FULL_PAGE_READ_CENTS} from '../core/model/reader';
+import {eurosTotal, FULL_PAGE_READ_CENTS} from '../core/model/reader';
+import {OCR_COST_CENTS} from '../core/model/ocr';
 
 export const isOfflineReason = (reason?: string): boolean =>
   reason !== undefined && /network error|timed out/i.test(reason);
@@ -216,9 +216,12 @@ export const gatherContext = async (
             const approx = Math.floor(bytes2 / 300_000);
             total = Math.max(total, approx);
           }
-          const needed = covered
-            ? pendingVisionPages(st0, notePath).length
-            : total;
+          // Chat pays NOTHING on a covered doc since the vision resume was
+          // cut from this path (user decision 2026-08-16: a chat question
+          // answers from the STORED transcript; the vision backlog belongs
+          // to the drain and to Sync). Only an UNCOVERED (changed/unread)
+          // doc still costs — its whole-file OCR, host-free, vision skipped.
+          const needed = covered ? 0 : total;
           // The 300 kB/page divisor above describes a 300 dpi SCAN. A born-
           // digital text PDF runs 10-50 kB/page, so for those it under-counts
           // 6-30x — and the gate never fired: a 520-page textbook was OCR'd
@@ -233,8 +236,8 @@ export const gatherContext = async (
           // page COUNT can be trusted here.
           const trusted = covered || capture.totalPages > 1;
           const upper = trusted ? needed : Math.floor((bytes ?? 0) / 20_000);
-          if (Math.max(needed, upper) > 100) {
-            const cents = covered ? READ_COST_CENTS : FULL_PAGE_READ_CENTS;
+          if (!covered && Math.max(needed, upper) > 100) {
+            const cents = OCR_COST_CENTS; // vision is never paid on this path
             return {
               kind: 'estimate',
               count: needed,
@@ -253,8 +256,15 @@ export const gatherContext = async (
           await opts.freshPdfVisionSystem(),
           notePath,
           // offOk: consent + ephemeral wipe handled by this flow.
-          // attended: a chat send is user-initiated — hint just refreshed.
-          {signal: opts.signal, offOk: true, eph: opts.isOff, attended: true},
+          // skipVision (user decision 2026-08-16): the chat path NEVER pays
+          // vision — a covered doc returns instantly and the answer comes
+          // from the stored transcript; a changed doc runs its host-free
+          // OCR only (the "reading (ocr)" banner is now always literally
+          // true). The vision backlog belongs to the drain and to Sync —
+          // before this, one chat question about a covered PDF silently
+          // drained its WHOLE vision debt synchronously (device logs
+          // 2026-08-16: "PDF resume: 15/35" behind a frozen 0/1 banner).
+          {signal: opts.signal, offOk: true, eph: opts.isOff, skipVision: true},
         );
         // Same C1 rule as the note branch: wipe what was written, never
         // a fallback selection. A hash-match early return wrote nothing.
