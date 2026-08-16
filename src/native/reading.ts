@@ -19,8 +19,6 @@ import {
   capturePageImage,
   capturePagePng,
   serializeRender,
-  beginLiveRead,
-  endLiveRead,
   readFileB64Native,
   hashFileFnvNative,
 } from './capture';
@@ -413,7 +411,9 @@ const syncPageIds = async (
     if (r.moved > 0 || r.dropped > 0) {
       console.log(
         '[SmartNoteAI.store]',
-        `remap ${notePath.split('/').pop()}: ${r.moved} moved, ${r.dropped} dropped`,
+        `remap ${notePath.split('/').pop()}: ${r.moved} moved, ${
+          r.dropped
+        } dropped`,
       );
     }
     if (r.refused === true) {
@@ -495,8 +495,12 @@ export const pagesNeedingRead = async (
     for (const p of pages) {
       const e = getPage(store, notePath, p);
       const cur = revs.get(p);
-      if (e !== null && e.rev !== undefined && cur !== undefined &&
-          e.hash === (ids.get(p) ?? '')) {
+      if (
+        e !== null &&
+        e.rev !== undefined &&
+        cur !== undefined &&
+        e.hash === (ids.get(p) ?? '')
+      ) {
         stamped++;
         if (e.rev !== cur) {
           moved++;
@@ -1004,154 +1008,149 @@ export const readNotePages = async (
 
   // (The note was already flushed at the top of this function — before the
   // ids/revs were read — so the renders below use skipSave.)
-  // Live-read marker (re-audit 2026-07-19 R2): while this paid loop
-  // renders, the background batch collect DEFERS its wave-2 renders —
-  // two flows rendering at once produced partial images that were then
-  // billed at Mistral as truth.
-  beginLiveRead();
-  try {
-    for (const page of todo) {
-      if (opts?.shouldStop?.() || opts?.signal?.aborted) {
+  // (A live-read marker once wrapped this loop so the batch collect
+  // would defer its wave-2 renders; the collect died on 2026-07-22 and
+  // the marker was purged in lot C (b), 2026-08-16 — serializeRender
+  // alone keeps concurrent renders from interleaving.)
+  for (const page of todo) {
+    if (opts?.shouldStop?.() || opts?.signal?.aborted) {
+      break;
+    }
+    // BLANK-page skip (v1.0.2, user GO 2026-08-03): zero elements on the
+    // page = no ink, nothing to transcribe — negative-cache it exactly
+    // like a paid blank result (same store path: hash+rev stamps, eph and
+    // lock write-truth included) without paying the render+OCR+Vision
+    // round. Exact by construction (element count, not a pixel
+    // heuristic); any probe failure falls through to the normal read.
+    if (deps.getElementCounts !== undefined) {
+      try {
+        const raw = (await deps.getElementCounts(page, notePath)) as
+          | number
+          | {result?: unknown}
+          | null;
+        const n =
+          typeof raw === 'number' ? raw : (raw?.result as number | undefined);
+        if (n === 0) {
+          await store(page, '', 'mistral-ocr');
+          blankSkipped++;
+          done++;
+          opts?.onProgress?.(done, todo.length);
+          continue;
+        }
+      } catch {
+        // probe failed — read normally, never block a read on the probe
+      }
+    }
+    // Device-bound render, sequential on purpose (skipSave: saved once above).
+    // Rotation (v0.52): the manual "Redo rotated" degrees win; otherwise a
+    // page the device flagged landscape is straightened by 90°.
+    const renderOpts = {
+      skipSave: true,
+      rotateDeg: opts?.rotateDeg ?? (landscape.has(page) ? 90 : undefined),
+    };
+    const img: string | {pngPath: string} | null = nativePostAvailable()
+      ? await capturePagePng(deps, notePath, page, renderOpts)
+          .then(p => (p === null ? null : {pngPath: p}))
+          .catch(() => null)
+      : await capturePageImage(deps, notePath, page, renderOpts).catch(
+          () => null,
+        );
+    if (opts?.shouldStop?.() || opts?.signal?.aborted) {
+      if (img !== null && typeof img !== 'string') {
+        await deps.deleteFile(img.pngPath).catch(() => false);
+      }
+      break;
+    }
+    if (img === null || (typeof img === 'string' && img.length === 0)) {
+      failed.push(page);
+      renderFailed.push(page); // free failure — no API call was made
+      if (firstReason === undefined) {
+        // Surfaced instead of silent (v0.63.4 — device: "Redo does
+        // nothing"): DOC-hosted, generateNotePng is a NOTE-app API.
+        firstReason =
+          'Could not render the page. If the plugin was opened over a ' +
+          'PDF/EPUB, note pages cannot be rendered here. Open it from ' +
+          'the note.';
+      }
+      done++;
+      opts?.onProgress?.(done, todo.length);
+      if (breaker.fail()) {
+        renderAborted = true;
         break;
       }
-      // BLANK-page skip (v1.0.2, user GO 2026-08-03): zero elements on the
-      // page = no ink, nothing to transcribe — negative-cache it exactly
-      // like a paid blank result (same store path: hash+rev stamps, eph and
-      // lock write-truth included) without paying the render+OCR+Vision
-      // round. Exact by construction (element count, not a pixel
-      // heuristic); any probe failure falls through to the normal read.
-      if (deps.getElementCounts !== undefined) {
-        try {
-          const raw = (await deps.getElementCounts(page, notePath)) as
-            | number
-            | {result?: unknown}
-            | null;
-          const n =
-            typeof raw === 'number' ? raw : (raw?.result as number | undefined);
-          if (n === 0) {
-            await store(page, '', 'mistral-ocr');
-            blankSkipped++;
-            done++;
-            opts?.onProgress?.(done, todo.length);
-            continue;
+      continue;
+    }
+    breaker.ok();
+    // v1.0.4 (collecte ②): the append-only rev moves on ANY edit — even
+    // write-then-erase that leaves the ink identical. The render is in
+    // hand and free: hash it, and if the stored entry carries the SAME
+    // pixel identity for the SAME page id, re-stamp the rev and skip
+    // the paid read entirely. Never on force (an explicit Redo must
+    // re-read), never on a locked page (frozen means frozen).
+    const pixTag = await notePixelTag(img).catch(() => null);
+    if (pixTag !== null && opts?.force !== true) {
+      const sNow = await loadStore();
+      const cur = getPage(sNow, notePath, page);
+      if (
+        cur !== null &&
+        cur.lock !== true &&
+        cur.hash === (pageIds.get(page) ?? '\u0000') &&
+        cur.vh === pixTag
+      ) {
+        await mutateStore(st => {
+          if (isPageLocked(st, notePath, page)) {
+            return false;
           }
-        } catch {
-          // probe failed — read normally, never block a read on the probe
-        }
-      }
-      // Device-bound render, sequential on purpose (skipSave: saved once above).
-      // Rotation (v0.52): the manual "Redo rotated" degrees win; otherwise a
-      // page the device flagged landscape is straightened by 90°.
-      const renderOpts = {
-        skipSave: true,
-        rotateDeg: opts?.rotateDeg ?? (landscape.has(page) ? 90 : undefined),
-      };
-      const img: string | {pngPath: string} | null = nativePostAvailable()
-        ? await capturePagePng(deps, notePath, page, renderOpts)
-            .then(p => (p === null ? null : {pngPath: p}))
-            .catch(() => null)
-        : await capturePageImage(deps, notePath, page, renderOpts).catch(
-            () => null,
-          );
-      if (opts?.shouldStop?.() || opts?.signal?.aborted) {
-        if (img !== null && typeof img !== 'string') {
-          await deps.deleteFile(img.pngPath).catch(() => false);
-        }
-        break;
-      }
-      if (img === null || (typeof img === 'string' && img.length === 0)) {
-        failed.push(page);
-        renderFailed.push(page); // free failure — no API call was made
-        if (firstReason === undefined) {
-          // Surfaced instead of silent (v0.63.4 — device: "Redo does
-          // nothing"): DOC-hosted, generateNotePng is a NOTE-app API.
-          firstReason =
-            'Could not render the page. If the plugin was opened over a ' +
-            'PDF/EPUB, note pages cannot be rendered here. Open it from ' +
-            'the note.';
-        }
+          const e = getPage(st, notePath, page);
+          if (e === null || e.hash !== (pageIds.get(page) ?? '\u0000')) {
+            return false;
+          }
+          e.rev = pageRevs.get(page);
+          if (e.va !== undefined) {
+            e.va = pageRevs.get(page); // the rev-keyed marker follows
+          }
+          markDocTouched(notePath);
+          // Settling the page's rev marker here (write-then-erase, outside
+          // upsertPage) makes any recorded owed.read stale: pagesNeedingRead no
+          // longer flags this page, but owed still counts it. Direct callers
+          // (readThenExport, chat gatherContext) don't recompute owed and would
+          // show a permanent phantom "N to sync" (owed-lifecycle audit
+          // 2026-08-14). Safe from phantom-reverse: those callers read the FULL
+          // needed set, so after the pass structural correctly shows 0; the
+          // Auto/Sync tick recomputes owed regardless.
+          invalidateOwed(st, notePath);
+        });
+        unchangedSkipped++;
         done++;
         opts?.onProgress?.(done, todo.length);
-        if (breaker.fail()) {
-          renderAborted = true;
-          break;
+        if (typeof img !== 'string') {
+          await deps.deleteFile(img.pngPath).catch(() => false);
         }
         continue;
       }
-      breaker.ok();
-      // v1.0.4 (collecte ②): the append-only rev moves on ANY edit — even
-      // write-then-erase that leaves the ink identical. The render is in
-      // hand and free: hash it, and if the stored entry carries the SAME
-      // pixel identity for the SAME page id, re-stamp the rev and skip
-      // the paid read entirely. Never on force (an explicit Redo must
-      // re-read), never on a locked page (frozen means frozen).
-      const pixTag = await notePixelTag(img).catch(() => null);
-      if (pixTag !== null && opts?.force !== true) {
-        const sNow = await loadStore();
-        const cur = getPage(sNow, notePath, page);
-        if (
-          cur !== null &&
-          cur.lock !== true &&
-          cur.hash === (pageIds.get(page) ?? '\u0000') &&
-          cur.vh === pixTag
-        ) {
-          await mutateStore(st => {
-            if (isPageLocked(st, notePath, page)) {
-              return false;
-            }
-            const e = getPage(st, notePath, page);
-            if (e === null || e.hash !== (pageIds.get(page) ?? '\u0000')) {
-              return false;
-            }
-            e.rev = pageRevs.get(page);
-            if (e.va !== undefined) {
-              e.va = pageRevs.get(page); // the rev-keyed marker follows
-            }
-            markDocTouched(notePath);
-            // Settling the page's rev marker here (write-then-erase, outside
-            // upsertPage) makes any recorded owed.read stale: pagesNeedingRead no
-            // longer flags this page, but owed still counts it. Direct callers
-            // (readThenExport, chat gatherContext) don't recompute owed and would
-            // show a permanent phantom "N to sync" (owed-lifecycle audit
-            // 2026-08-14). Safe from phantom-reverse: those callers read the FULL
-            // needed set, so after the pass structural correctly shows 0; the
-            // Auto/Sync tick recomputes owed regardless.
-            invalidateOwed(st, notePath);
-          });
-          unchangedSkipped++;
-          done++;
-          opts?.onProgress?.(done, todo.length);
-          if (typeof img !== 'string') {
-            await deps.deleteFile(img.pngPath).catch(() => false);
-          }
-          continue;
-        }
-      }
-      // Network read joins the sliding window; renders continue meanwhile.
-      const p = readOne(page, img, pixTag).finally(() => inFlight.delete(p));
-      inFlight.add(p);
-      if (inFlight.size >= PARALLEL_READS) {
-        await Promise.race(inFlight);
-      }
-      // Yield the JS thread between pages so a background pass (Auto tick) can't
-      // freeze the UI: without this, opening a note's page list while Auto is
-      // churning took seconds (render + base64 monopolised the thread).
-      // yieldToJs: an immediate, NOT a timer. setTimeout(0) is frozen when
-      // the view backgrounds (it wedged a whole tick, audit C2), while
-      // sleepHybrid(0) waited for the next heartbeat, up to 2.5 s per page
-      // (review 2026-08-01 #5). An immediate is flushed at the end of the
-      // current JS batch in both states.
-      await yieldToJs();
-      // A dead network fails every page the same way — stop burning renders.
-      if (firstReason !== undefined && /Network error/i.test(firstReason)) {
-        break;
-      }
     }
-    await Promise.all(inFlight);
-    logBlanks();
-  } finally {
-    endLiveRead();
+    // Network read joins the sliding window; renders continue meanwhile.
+    const p = readOne(page, img, pixTag).finally(() => inFlight.delete(p));
+    inFlight.add(p);
+    if (inFlight.size >= PARALLEL_READS) {
+      await Promise.race(inFlight);
+    }
+    // Yield the JS thread between pages so a background pass (Auto tick) can't
+    // freeze the UI: without this, opening a note's page list while Auto is
+    // churning took seconds (render + base64 monopolised the thread).
+    // yieldToJs: an immediate, NOT a timer. setTimeout(0) is frozen when
+    // the view backgrounds (it wedged a whole tick, audit C2), while
+    // sleepHybrid(0) waited for the next heartbeat, up to 2.5 s per page
+    // (review 2026-08-01 #5). An immediate is flushed at the end of the
+    // current JS batch in both states.
+    await yieldToJs();
+    // A dead network fails every page the same way — stop burning renders.
+    if (firstReason !== undefined && /Network error/i.test(firstReason)) {
+      break;
+    }
   }
+  await Promise.all(inFlight);
+  logBlanks();
   if (diagOcrOk > 0) {
     // scores=0 with text ⇒ the optional confidence field is ABSENT from
     // the response; scores>0 with 0 low ⇒ recalibrated above 0.8.
@@ -1509,7 +1508,6 @@ export const finishVisionLive = async (
   };
 };
 
-
 // PDF path: one /v1/ocr call for the whole document, all pages stored.
 // docHash (byte length) invalidates the lot when the file changes.
 // Since v0.22.8 PDFs escalate too (user decision: "même comportement" —
@@ -1571,7 +1569,9 @@ const renderDocPageInner = async (
       height: 1872,
     });
     const ok =
-      !!r && typeof r === 'object' && (r as {success?: unknown}).success === true;
+      !!r &&
+      typeof r === 'object' &&
+      (r as {success?: unknown}).success === true;
     if (!ok) {
       await deps.deleteFile(pngPath).catch(() => false);
       return null;
@@ -1696,7 +1696,8 @@ export const fnvHex = (s: string): string => {
   return (h >>> 0).toString(16);
 };
 
-export const pageMarkHash = (imageB64: string): string => `mh:${fnvHex(imageB64)}`;
+export const pageMarkHash = (imageB64: string): string =>
+  `mh:${fnvHex(imageB64)}`;
 
 // NOTE-page pixel identity (v1.0.4, collecte ②: write-then-erase used to
 // re-bill an unchanged page — the append-only rev moves on ANY edit even
@@ -1734,7 +1735,8 @@ export const renderDocPageWithMarks = async (
       deps.compositePng !== undefined
     ) {
       const dir = (await deps.getPluginDirPath().catch(() => null)) ?? '';
-      const markPng = dir.length === 0 ? '' : `${dir}/sp-mark-${Date.now()}-${page}.png`;
+      const markPng =
+        dir.length === 0 ? '' : `${dir}/sp-mark-${Date.now()}-${page}.png`;
       const mr = await deps
         .generateMarkThumbnails(markFilePath(pdfPath), page, markPng, {
           width: 1404,
@@ -1742,7 +1744,9 @@ export const renderDocPageWithMarks = async (
         })
         .catch(() => null);
       const markOk =
-        !!mr && typeof mr === 'object' && (mr as {success?: unknown}).success === true;
+        !!mr &&
+        typeof mr === 'object' &&
+        (mr as {success?: unknown}).success === true;
       if (markOk) {
         // Composite in place (out = docPng). On failure we keep the plain
         // page — better than nothing.
@@ -1796,168 +1800,162 @@ export const readPdfPageVision = async (
     };
   }
   const annotated = marks.includes(page);
-  beginLiveRead();
-  try {
-    const img = await renderDocPageWithMarks(deps, pdfPath, page, annotated);
-    if (img === null) {
-      return {ok: false, read: 0, failed: [page], reason: 'render failed'};
+  const img = await renderDocPageWithMarks(deps, pdfPath, page, annotated);
+  if (img === null) {
+    return {ok: false, read: 0, failed: [page], reason: 'render failed'};
+  }
+  const store = await loadStore();
+  const cur = getPage(store, pdfPath, page);
+  // Redo hint fix (2026-08-16): only the /v1/ocr text is a trustworthy hint
+  // (host-independent, read from the file bytes). A previous VISION or
+  // hand-edited text is exactly what the user is contesting with this
+  // explicit re-read — feeding it back as a hint made the model parrot it
+  // ("trust the image wherever they disagree" collapses on a sparse page),
+  // so a contaminated page returned the SAME wrong text on every Redo and
+  // could never self-heal (BUJO p9 incident).
+  const hint = cur?.source === 'mistral-ocr' ? cur.text : '';
+  const v = await escalateRead(
+    fetchAdapter,
+    apiKey,
+    visionSystem,
+    img,
+    hint,
+    opts?.signal,
+  );
+  if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
+    // Same anti-bleed writer gate as the automatic pass (2026-08-16) — but
+    // SKIPPED when this PDF is the doc on screen: an attended Redo with
+    // the right doc open is the trusted condition, and it is the escape
+    // hatch the rejection message promises (audit #9: without it, a page
+    // whose OCR is garbled-but-wordy while vision reads it correctly
+    // dead-ended on this gate forever).
+    if (cur?.source === 'mistral-ocr' && !visionMatchesOcr(cur.text, v.text)) {
+      const curRaw = await deps.getCurrentFilePath().catch(() => null);
+      const onScreen =
+        (typeof curRaw === 'string'
+          ? curRaw
+          : ((curRaw as {result?: unknown})?.result as string | undefined)) ===
+        pdfPath;
+      if (!onScreen) {
+        return {
+          ok: false,
+          read: 0,
+          failed: [page],
+          reason:
+            'The rendered image does not match this page — open THIS PDF in ' +
+            'the reader and retry.',
+        };
+      }
     }
-    const store = await loadStore();
-    const cur = getPage(store, pdfPath, page);
-    // Redo hint fix (2026-08-16): only the /v1/ocr text is a trustworthy hint
-    // (host-independent, read from the file bytes). A previous VISION or
-    // hand-edited text is exactly what the user is contesting with this
-    // explicit re-read — feeding it back as a hint made the model parrot it
-    // ("trust the image wherever they disagree" collapses on a sparse page),
-    // so a contaminated page returned the SAME wrong text on every Redo and
-    // could never self-heal (BUJO p9 incident).
-    const hint = cur?.source === 'mistral-ocr' ? cur.text : '';
-    const v = await escalateRead(
-      fetchAdapter,
-      apiKey,
-      visionSystem,
-      img,
-      hint,
-      opts?.signal,
+    const wrote = await upsertTranscript(
+      pdfPath,
+      page,
+      v.text.trim(),
+      'medium',
+      {hash: ''},
+      undefined,
+      opts?.eph === true,
     );
-    if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
-      // Same anti-bleed writer gate as the automatic pass (2026-08-16) — but
-      // SKIPPED when this PDF is the doc on screen: an attended Redo with
-      // the right doc open is the trusted condition, and it is the escape
-      // hatch the rejection message promises (audit #9: without it, a page
-      // whose OCR is garbled-but-wordy while vision reads it correctly
-      // dead-ended on this gate forever).
-      if (cur?.source === 'mistral-ocr' && !visionMatchesOcr(cur.text, v.text)) {
-        const curRaw = await deps.getCurrentFilePath().catch(() => null);
-        const onScreen =
-          (typeof curRaw === 'string'
-            ? curRaw
-            : ((curRaw as {result?: unknown})?.result as string | undefined)) ===
-          pdfPath;
-        if (!onScreen) {
-          return {
-            ok: false,
-            read: 0,
-            failed: [page],
-            reason:
-              'The rendered image does not match this page — open THIS PDF in ' +
-              'the reader and retry.',
-          };
-        }
-      }
-      const wrote = await upsertTranscript(
-        pdfPath,
-        page,
-        v.text.trim(),
-        'medium',
-        {hash: ''},
-        undefined,
-        opts?.eph === true,
-      );
-      if (!wrote) {
-        return {ok: false, read: 0, failed: [page], reason: 'Page is locked.'};
-      }
-      if (annotated && wrote) {
-        // Round 10 #3: record which pixels this text came from, exactly
-        // like the automatic pass — or the next doorbell re-bills a page
-        // whose pixels did not change. Round 11 #3: skipped if the page
-        // was locked mid-read (the upsert above refused, and stamping a
-        // fresh identity onto the OLD text would lie).
-        const tag = pageMarkHash(img);
-        await mutateStore(st => {
-          if (isPageLocked(st, pdfPath, page)) {
-            return false; // doc/page locked between write and stamp
-          }
-          const e = getPage(st, pdfPath, page);
-          if (e !== null) {
-            e.vh = tag;
-          }
-          markDocTouched(pdfPath);
-        });
-      }
-      // Fix-audit lot-3 #2: the explicit Redo is the third payer — a page it
-      // just PROVED readable must not stay vision-capped for the session
-      // (a later doorbell recheck of this very page was starved).
-      clearFailure('vision', pdfPath, page);
-      // A PAID write must reach disk NOW (audit 3 #4, and the rule stated
-      // at upsertTranscript): every automatic caller flushes after its
-      // pass, this manual one rode the 800 ms debounce alone — and RN
-      // freezes JS timers the moment the plugin view goes background,
-      // which is exactly what a user does right after tapping Redo.
-      await flushStore();
-      return {ok: true, read: 1, failed: []};
+    if (!wrote) {
+      return {ok: false, read: 0, failed: [page], reason: 'Page is locked.'};
     }
-    if (v.ok) {
-      // The request LANDED and vision saw nothing — a truly blank page or
-      // a bare "The page is blank." statement. The automatic pass stores
-      // the durable empty marker for this; the manual Redo used to surface
-      // "Vision returned nothing." as an ERROR and store nothing, so the
-      // user could re-tap (and re-pay) forever (collecte 2026-08-03).
-      // Same rules as the pass: existing OCR text is KEPT (vision merely
-      // added nothing to it), only a missing entry becomes the '' marker.
-      if (isPageLocked(await loadStore(), pdfPath, page)) {
-        return {ok: false, read: 0, failed: [page], reason: 'Page is locked.'};
-      }
-      const dh = getDocHash(await loadStore(), pdfPath);
-      const tag = annotated ? pageMarkHash(img) : null;
-      // Did this page already carry text? Decides which truth to report.
-      const kept =
-        (getPage(await loadStore(), pdfPath, page)?.text ?? '').trim().length >
-        0;
+    if (annotated && wrote) {
+      // Round 10 #3: record which pixels this text came from, exactly
+      // like the automatic pass — or the next doorbell re-bills a page
+      // whose pixels did not change. Round 11 #3: skipped if the page
+      // was locked mid-read (the upsert above refused, and stamping a
+      // fresh identity onto the OLD text would lie).
+      const tag = pageMarkHash(img);
       await mutateStore(st => {
         if (isPageLocked(st, pdfPath, page)) {
-          return false; // locked between the check and the write
+          return false; // doc/page locked between write and stamp
         }
-        let e = getPage(st, pdfPath, page);
-        if (e === null && tag !== null) {
-          // Audit 2 #2 (money): create an entry ONLY for an ANNOTATED page,
-          // exactly like the automatic pass. A PLAIN page's entry is the
-          // whole-file OCR's job — inventing one here gives the doc a page
-          // it did not have, and adoptPdfDoc refuses to adopt into a doc
-          // that already has pages: moving that PDF would then re-OCR the
-          // WHOLE file. A plain blank page keeps its honest message below
-          // and simply re-reads if the user taps Redo again (one page).
-          const fresh = makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now());
-          if (opts?.eph === true) {
-            // Audit 1 #1: the old error path stored NOTHING, so an
-            // Off-consent read left no trace for free. Creating the marker
-            // must carry the same flag as every other writer or the boot
-            // wipe never sweeps it and an Off doc keeps an entry.
-            fresh.eph = true;
-          }
-          upsertPage(st, pdfPath, page, fresh, Date.now());
-          e = getPage(st, pdfPath, page);
-        }
-        if (e !== null && e.source === 'mistral-ocr') {
-          e.va = tag ?? `d:${dh}`; // annotated: its pixels; plain: the doc
-        } else if (e !== null && e.source === 'medium' && tag !== null) {
-          e.vh = tag; // recheck came back empty — record the current pixels
+        const e = getPage(st, pdfPath, page);
+        if (e !== null) {
+          e.vh = tag;
         }
         markDocTouched(pdfPath);
       });
-      // Same durability rule as the paid branch above: the marker is what
-      // stops this page being re-read, so it may not ride a JS timer.
-      await flushStore();
-      // Succeeded, but nothing changed on screen: SAY so (the tap deserves
-      // an answer, and silence used to read as a broken button).
-      return {
-        ok: true,
-        read: 1,
-        failed: [],
-        reason: kept
-          ? 'Vision found nothing to add — the transcript is unchanged.'
-          : 'This page is blank — nothing to transcribe.',
-      };
     }
-    return {
-      ok: false,
-      read: 0,
-      failed: [page],
-      reason: (v as {reason?: string}).reason ?? 'Vision returned nothing.',
-    };
-  } finally {
-    endLiveRead();
+    // Fix-audit lot-3 #2: the explicit Redo is the third payer — a page it
+    // just PROVED readable must not stay vision-capped for the session
+    // (a later doorbell recheck of this very page was starved).
+    clearFailure('vision', pdfPath, page);
+    // A PAID write must reach disk NOW (audit 3 #4, and the rule stated
+    // at upsertTranscript): every automatic caller flushes after its
+    // pass, this manual one rode the 800 ms debounce alone — and RN
+    // freezes JS timers the moment the plugin view goes background,
+    // which is exactly what a user does right after tapping Redo.
+    await flushStore();
+    return {ok: true, read: 1, failed: []};
   }
+  if (v.ok) {
+    // The request LANDED and vision saw nothing — a truly blank page or
+    // a bare "The page is blank." statement. The automatic pass stores
+    // the durable empty marker for this; the manual Redo used to surface
+    // "Vision returned nothing." as an ERROR and store nothing, so the
+    // user could re-tap (and re-pay) forever (collecte 2026-08-03).
+    // Same rules as the pass: existing OCR text is KEPT (vision merely
+    // added nothing to it), only a missing entry becomes the '' marker.
+    if (isPageLocked(await loadStore(), pdfPath, page)) {
+      return {ok: false, read: 0, failed: [page], reason: 'Page is locked.'};
+    }
+    const dh = getDocHash(await loadStore(), pdfPath);
+    const tag = annotated ? pageMarkHash(img) : null;
+    // Did this page already carry text? Decides which truth to report.
+    const kept =
+      (getPage(await loadStore(), pdfPath, page)?.text ?? '').trim().length > 0;
+    await mutateStore(st => {
+      if (isPageLocked(st, pdfPath, page)) {
+        return false; // locked between the check and the write
+      }
+      let e = getPage(st, pdfPath, page);
+      if (e === null && tag !== null) {
+        // Audit 2 #2 (money): create an entry ONLY for an ANNOTATED page,
+        // exactly like the automatic pass. A PLAIN page's entry is the
+        // whole-file OCR's job — inventing one here gives the doc a page
+        // it did not have, and adoptPdfDoc refuses to adopt into a doc
+        // that already has pages: moving that PDF would then re-OCR the
+        // WHOLE file. A plain blank page keeps its honest message below
+        // and simply re-reads if the user taps Redo again (one page).
+        const fresh = makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now());
+        if (opts?.eph === true) {
+          // Audit 1 #1: the old error path stored NOTHING, so an
+          // Off-consent read left no trace for free. Creating the marker
+          // must carry the same flag as every other writer or the boot
+          // wipe never sweeps it and an Off doc keeps an entry.
+          fresh.eph = true;
+        }
+        upsertPage(st, pdfPath, page, fresh, Date.now());
+        e = getPage(st, pdfPath, page);
+      }
+      if (e !== null && e.source === 'mistral-ocr') {
+        e.va = tag ?? `d:${dh}`; // annotated: its pixels; plain: the doc
+      } else if (e !== null && e.source === 'medium' && tag !== null) {
+        e.vh = tag; // recheck came back empty — record the current pixels
+      }
+      markDocTouched(pdfPath);
+    });
+    // Same durability rule as the paid branch above: the marker is what
+    // stops this page being re-read, so it may not ride a JS timer.
+    await flushStore();
+    // Succeeded, but nothing changed on screen: SAY so (the tap deserves
+    // an answer, and silence used to read as a broken button).
+    return {
+      ok: true,
+      read: 1,
+      failed: [],
+      reason: kept
+        ? 'Vision found nothing to add — the transcript is unchanged.'
+        : 'This page is blank — nothing to transcribe.',
+    };
+  }
+  return {
+    ok: false,
+    read: 0,
+    failed: [page],
+    reason: (v as {reason?: string}).reason ?? 'Vision returned nothing.',
+  };
 };
 
 // PDF path — OCR-first for printed text (v0.38: OCR 4 is strongest and
@@ -1969,10 +1967,7 @@ export const readPdfPageVision = async (
 // 'mistral-ocr', non-empty) — the "Vision to retry" queue. Used to resume
 // Vision without re-OCR (Option A, 2026-07-29; generic since v0.87: the Auto
 // tick drains the note-side debt with it too).
-export const pendingVisionPages = (
-  store: Store,
-  pdfPath: string,
-): number[] => {
+export const pendingVisionPages = (store: Store, pdfPath: string): number[] => {
   const doc = store.docs[pdfPath];
   if (doc === undefined) {
     return [];
@@ -2104,258 +2099,258 @@ const visionPassPdf = async (
   // PDF back to the foreground while you use your device. A page that can't
   // render just stays pending, and the SYNC STATUS tells you to open a PDF —
   // the pass resumes when you do.
-  beginLiveRead();
-  try {
-    for (const page of pages) {
-      if (opts?.signal?.aborted || opts?.shouldStop?.()) {
-        interrupted = true;
+  for (const page of pages) {
+    if (opts?.signal?.aborted || opts?.shouldStop?.()) {
+      interrupted = true;
+      break;
+    }
+    processed++;
+    const cur = getPage(store0, pdfPath, page);
+    const isAnn = annotated.has(page);
+    // Audit 2026-08-16 (#0/#1/#10): a MISSING page has no OCR baseline, so
+    // the anti-bleed writer gate below is structurally blind for it — the
+    // one page class where a bled render would be stored ungated. Repair
+    // it ONLY when the caller verified this doc is the one on screen
+    // (repairMissing); otherwise leave it pending with a reason. The debt
+    // stays visible and the drain repairs it the moment the user actually
+    // has this PDF open — which is also the one condition under which the
+    // render cannot cross documents.
+    if (cur === null && opts?.repairMissing !== true) {
+      deferredMissing++;
+      firstReason =
+        firstReason ??
+        'Cleared pages repair on your next Sync now with THIS PDF open.';
+      continue;
+    }
+    if (isPageLocked(await loadStore(), pdfPath, page)) {
+      lockSkipped.push(page); // the user's freeze — and the doorbell hears it
+      continue;
+    }
+    if (cur?.source === 'user') {
+      // A hand-corrected page carries no pixel identity to compare
+      // against (the text is the user's, not vision's): without PROOF of
+      // change it is never touched. Explicit Redo remains available.
+      continue;
+    }
+    if (!isAnn && cur?.source === 'medium') {
+      continue; // plain page, Vision done — its pixels only change with the bytes
+    }
+    const img = await renderDocPageWithMarks(deps, pdfPath, page, isAnn);
+    if (img === null) {
+      failed.push(page);
+      renderFailed.push(page); // free failure — no API call was made
+      firstReason =
+        firstReason ??
+        'Could not render a PDF page: open a PDF in the reader, then retry.';
+      if (breaker.fail()) {
+        renderAborted = true;
         break;
       }
-      processed++;
-      const cur = getPage(store0, pdfPath, page);
-      const isAnn = annotated.has(page);
-      // Audit 2026-08-16 (#0/#1/#10): a MISSING page has no OCR baseline, so
-      // the anti-bleed writer gate below is structurally blind for it — the
-      // one page class where a bled render would be stored ungated. Repair
-      // it ONLY when the caller verified this doc is the one on screen
-      // (repairMissing); otherwise leave it pending with a reason. The debt
-      // stays visible and the drain repairs it the moment the user actually
-      // has this PDF open — which is also the one condition under which the
-      // render cannot cross documents.
-      if (cur === null && opts?.repairMissing !== true) {
-        deferredMissing++;
-        firstReason =
-          firstReason ??
-          'Cleared pages repair on your next Sync now with THIS PDF open.';
-        continue;
-      }
-      if (isPageLocked(await loadStore(), pdfPath, page)) {
-        lockSkipped.push(page); // the user's freeze — and the doorbell hears it
-        continue;
-      }
-      if (cur?.source === 'user') {
-        // A hand-corrected page carries no pixel identity to compare
-        // against (the text is the user's, not vision's): without PROOF of
-        // change it is never touched. Explicit Redo remains available.
-        continue;
-      }
-      if (!isAnn && cur?.source === 'medium') {
-        continue; // plain page, Vision done — its pixels only change with the bytes
-      }
-      const img = await renderDocPageWithMarks(deps, pdfPath, page, isAnn);
-      if (img === null) {
+      continue;
+    }
+    // Anti-bleed tripwire (2026-08-16): two different (path,page) requests
+    // yielding pixel-identical CONTENT-BEARING images cannot be told apart
+    // from the host-bound renderer returning the foreground doc's page —
+    // but they can also be LEGITIMATE (planner PDFs repeat identical
+    // template pages; near-copies of one PDF share pages — both real in
+    // this user's library). So the collision only DEFERS the page to the
+    // next pass — where the first-comer is already settled, so genuine
+    // duplicates converge one per pass — and deliberately does NOT feed
+    // the render breaker (audit 2026-08-16 #2/#4/#7: three identical
+    // template pages in a row aborted the whole drain and falsely blocked
+    // the PDF host for 60 s). A real host-stuck pass still has its blast
+    // radius capped at ONE stored page. The size floor keeps genuinely
+    // identical blank pages from ever colliding.
+    if (opts?.seenRenders !== undefined && img.length > TRIPWIRE_MIN_B64) {
+      const h = pageMarkHash(img);
+      const owner = `${pdfPath}#${page}`;
+      const prev = opts.seenRenders.get(h);
+      if (prev !== undefined && prev !== owner) {
         failed.push(page);
-        renderFailed.push(page); // free failure — no API call was made
+        renderFailed.push(page); // free — no API call, no retry-cap hit
         firstReason =
           firstReason ??
-          'Could not render a PDF page: open a PDF in the reader, then retry.';
-        if (breaker.fail()) {
-          renderAborted = true;
-          break;
-        }
-        continue;
-      }
-      // Anti-bleed tripwire (2026-08-16): two different (path,page) requests
-      // yielding pixel-identical CONTENT-BEARING images cannot be told apart
-      // from the host-bound renderer returning the foreground doc's page —
-      // but they can also be LEGITIMATE (planner PDFs repeat identical
-      // template pages; near-copies of one PDF share pages — both real in
-      // this user's library). So the collision only DEFERS the page to the
-      // next pass — where the first-comer is already settled, so genuine
-      // duplicates converge one per pass — and deliberately does NOT feed
-      // the render breaker (audit 2026-08-16 #2/#4/#7: three identical
-      // template pages in a row aborted the whole drain and falsely blocked
-      // the PDF host for 60 s). A real host-stuck pass still has its blast
-      // radius capped at ONE stored page. The size floor keeps genuinely
-      // identical blank pages from ever colliding.
-      if (opts?.seenRenders !== undefined && img.length > TRIPWIRE_MIN_B64) {
-        const h = pageMarkHash(img);
-        const owner = `${pdfPath}#${page}`;
-        const prev = opts.seenRenders.get(h);
-        if (prev !== undefined && prev !== owner) {
-          failed.push(page);
-          renderFailed.push(page); // free — no API call, no retry-cap hit
-          firstReason =
-            firstReason ??
-            'A page rendered identical to another — deferred to the next pass.';
-          console.log(
-            '[SmartNoteAI.read]',
-            `bleed-tripwire: render of ${owner} is pixel-identical to ` +
-              `${prev} — deferred to the next pass, nothing stored`,
-          );
-          continue;
-        }
-        opts.seenRenders.set(h, owner);
-      }
-      breaker.ok();
-      // Phase B: an ANNOTATED page's identity is the hash of the image we
-      // just rendered (free). Unchanged pixels never reach the paid model —
-      // whatever the .mark byte size did.
-      const annTag = isAnn ? pageMarkHash(img) : null;
-      if (annTag !== null && (cur?.vh === annTag || cur?.va === annTag)) {
-        continue;
-      }
-      const v = await escalateRead(
-        fetchAdapter,
-        apiKey,
-        visionSystem,
-        img,
-        cur?.text ?? '',
-        opts?.signal,
-      );
-      if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
-        // Anti-bleed writer gate (2026-08-16): the page's stored text is the
-        // baseline — /v1/ocr text (host-independent truth) for an OCR page,
-        // the already-PAID vision text for an annotated re-check (audit #6:
-        // ink is added ON the same printed page, so a legitimate re-read
-        // keeps its vocabulary; a bled render shares none of it). A result
-        // sharing essentially nothing with a substantial baseline means the
-        // rendered image was another document's page (the BUJO p9 incident):
-        // refuse the write.
-        const baseline =
-          cur?.source === 'mistral-ocr' || (isAnn && cur?.source === 'medium')
-            ? cur.text
-            : null;
-        if (baseline !== null && !visionMatchesOcr(baseline, v.text)) {
-          failed.push(page);
-          firstReason =
-            firstReason ??
-            'Vision text did not match this page — rejected. Use "Redo AI" ' +
-              'with this PDF open to force a re-read.';
-          console.log(
-            '[SmartNoteAI.read]',
-            `bleed-gate: vision text for ${pdfPath.split('/').pop()} p${
-              page + 1
-            } shares nothing with its stored baseline — rejected, nothing stored`,
-          );
-          // Settle an OCR page DURABLY (audit #5/#9/#14): a deterministic
-          // mismatch (garbled-but-wordy OCR vs a correct reading, or a
-          // persistently bleeding render) must not re-bill a vision call
-          // every session forever — nor on every chat send through the
-          // uncapped resume path. The page KEEPS its safe OCR text and is
-          // marked vision-settled at this content; the escape hatch is the
-          // explicit Redo with THIS PDF open (which skips the gate).
-          if (cur?.source === 'mistral-ocr') {
-            const dh = getDocHash(await loadStore(), pdfPath);
-            await mutateStore(st => {
-              if (isPageLocked(st, pdfPath, page)) {
-                return false;
-              }
-              const e = getPage(st, pdfPath, page);
-              if (e !== null && e.source === 'mistral-ocr') {
-                e.va = annTag ?? `d:${dh}`;
-              }
-              markDocTouched(pdfPath);
-            });
-          } else if (annTag !== null) {
-            // Annotated re-check rejected (fix-audit D3): stamp the PIXELS so
-            // THIS ink state is never re-billed — an erase-and-rewrite on a
-            // sparse page mismatches its own old text deterministically, and
-            // without the stamp every chat send re-paid the same rejected
-            // call (the resume path has no per-page cap). The old text stays;
-            // the NEXT ink change re-rings the recheck, and the explicit
-            // "Redo AI" (no gate on 'medium' pages) stores a fresh read now.
-            await mutateStore(st => {
-              if (isPageLocked(st, pdfPath, page)) {
-                return false;
-              }
-              const e = getPage(st, pdfPath, page);
-              if (e !== null) {
-                e.vh = annTag;
-              }
-              markDocTouched(pdfPath);
-            });
-          }
-          continue;
-        }
-        const wrote = await upsertTranscript(
-          pdfPath,
-          page,
-          v.text.trim(),
-          'medium',
-          {hash: ''},
-          cur?.low,
-          opts?.eph === true,
+          'A page rendered identical to another — deferred to the next pass.';
+        console.log(
+          '[SmartNoteAI.read]',
+          `bleed-tripwire: render of ${owner} is pixel-identical to ` +
+            `${prev} — deferred to the next pass, nothing stored`,
         );
-        if (!wrote) {
-          lockSkipped.push(page); // locked mid-flight (round 13 #1 / 14 #1)
-          continue;
-        }
-        if (annTag !== null) {
+        continue;
+      }
+      opts.seenRenders.set(h, owner);
+    }
+    breaker.ok();
+    // Phase B: an ANNOTATED page's identity is the hash of the image we
+    // just rendered (free). Unchanged pixels never reach the paid model —
+    // whatever the .mark byte size did.
+    const annTag = isAnn ? pageMarkHash(img) : null;
+    if (annTag !== null && (cur?.vh === annTag || cur?.va === annTag)) {
+      continue;
+    }
+    const v = await escalateRead(
+      fetchAdapter,
+      apiKey,
+      visionSystem,
+      img,
+      cur?.text ?? '',
+      opts?.signal,
+    );
+    if (v.ok && v.text.trim().length > 0 && !isBlankAnswer(v.text)) {
+      // Anti-bleed writer gate (2026-08-16): the page's stored text is the
+      // baseline — /v1/ocr text (host-independent truth) for an OCR page,
+      // the already-PAID vision text for an annotated re-check (audit #6:
+      // ink is added ON the same printed page, so a legitimate re-read
+      // keeps its vocabulary; a bled render shares none of it). A result
+      // sharing essentially nothing with a substantial baseline means the
+      // rendered image was another document's page (the BUJO p9 incident):
+      // refuse the write.
+      const baseline =
+        cur?.source === 'mistral-ocr' || (isAnn && cur?.source === 'medium')
+          ? cur.text
+          : null;
+      if (baseline !== null && !visionMatchesOcr(baseline, v.text)) {
+        failed.push(page);
+        firstReason =
+          firstReason ??
+          'Vision text did not match this page — rejected. Use "Redo AI" ' +
+            'with this PDF open to force a re-read.';
+        console.log(
+          '[SmartNoteAI.read]',
+          `bleed-gate: vision text for ${pdfPath.split('/').pop()} p${
+            page + 1
+          } shares nothing with its stored baseline — rejected, nothing stored`,
+        );
+        // Settle an OCR page DURABLY (audit #5/#9/#14): a deterministic
+        // mismatch (garbled-but-wordy OCR vs a correct reading, or a
+        // persistently bleeding render) must not re-bill a vision call
+        // every session forever — nor on every chat send through the
+        // uncapped resume path. The page KEEPS its safe OCR text and is
+        // marked vision-settled at this content; the escape hatch is the
+        // explicit Redo with THIS PDF open (which skips the gate).
+        if (cur?.source === 'mistral-ocr') {
+          const dh = getDocHash(await loadStore(), pdfPath);
           await mutateStore(st => {
             if (isPageLocked(st, pdfPath, page)) {
-              return false; // doc/page locked between write and stamp
+              return false;
+            }
+            const e = getPage(st, pdfPath, page);
+            if (e !== null && e.source === 'mistral-ocr') {
+              e.va = annTag ?? `d:${dh}`;
+            }
+            markDocTouched(pdfPath);
+          });
+        } else if (annTag !== null) {
+          // Annotated re-check rejected (fix-audit D3): stamp the PIXELS so
+          // THIS ink state is never re-billed — an erase-and-rewrite on a
+          // sparse page mismatches its own old text deterministically, and
+          // without the stamp every chat send re-paid the same rejected
+          // call (the resume path has no per-page cap). The old text stays;
+          // the NEXT ink change re-rings the recheck, and the explicit
+          // "Redo AI" (no gate on 'medium' pages) stores a fresh read now.
+          await mutateStore(st => {
+            if (isPageLocked(st, pdfPath, page)) {
+              return false;
             }
             const e = getPage(st, pdfPath, page);
             if (e !== null) {
-              e.vh = annTag; // the pixels this vision text was made from
+              e.vh = annTag;
             }
             markDocTouched(pdfPath);
           });
         }
-        read++;
-        stored.push(page);
-        if (read % PAID_FLUSH_EVERY === 0) {
-          await flushStore(); // R1: bound the loss window on a hard kill
-        }
-        opts?.onProgress?.(read, pages.length);
-      } else if (v.ok) {
-        if (isPageLocked(await loadStore(), pdfPath, page)) {
-          lockSkipped.push(page); // lock landed during the vision call
-          continue;
-        }
-        // The request LANDED and vision had nothing to add (a full-page
-        // figure): remember it durably, keyed to the doc's current hash.
-        // Without this the page was re-billed 3 attempts per SESSION,
-        // every session, forever (full review 2026-08-02 #8 — the
-        // in-memory fail cap re-arms at each restart).
-        const dh = getDocHash(await loadStore(), pdfPath);
+        continue;
+      }
+      const wrote = await upsertTranscript(
+        pdfPath,
+        page,
+        v.text.trim(),
+        'medium',
+        {hash: ''},
+        cur?.low,
+        opts?.eph === true,
+      );
+      if (!wrote) {
+        lockSkipped.push(page); // locked mid-flight (round 13 #1 / 14 #1)
+        continue;
+      }
+      if (annTag !== null) {
         await mutateStore(st => {
-          // Round 14 #2/#7: doc-aware, BEFORE any entry creation, and an
-          // exact `false` so a refusal schedules no persist/notify.
           if (isPageLocked(st, pdfPath, page)) {
-            return false;
+            return false; // doc/page locked between write and stamp
           }
-          let e = getPage(st, pdfPath, page);
-          if (e === null) {
-            // A page with no entry whose vision came back empty: create the
-            // negative-cache entry so the marker has a home. Annotated pages
-            // always needed this; since lot 1 (2026-08-16) a CLEARED plain
-            // page of a covered PDF is missing-entry Vision debt too, and
-            // without the stub it would never leave pendingVisionPages —
-            // re-billed 3 attempts per session, every session (the exact
-            // 2026-08-02 #8 class this cache exists to prevent).
-            const fresh = makePageEntry('', 'mistral-ocr', {hash: ''}, Date.now());
-            if (opts?.eph === true) {
-              // Audit 2 #3: the twin of the manual writer — an Off-doc
-              // read must mark its stub ephemeral here too, or the boot
-              // sweep leaves an Off document holding an entry.
-              fresh.eph = true;
-            }
-            upsertPage(st, pdfPath, page, fresh, Date.now());
-            e = getPage(st, pdfPath, page);
-          }
-          if (e !== null && e.source === 'mistral-ocr') {
-            // Annotated: keyed to ITS pixels. Plain: keyed to the doc.
-            e.va = annTag ?? `d:${dh}`;
-          } else if (e !== null && e.source === 'medium' && annTag !== null) {
-            // Audit 9 #2: a 'medium' annotated page whose recheck returned
-            // empty keeps its old text — but the CURRENT pixels must be
-            // recorded, or every future doorbell re-bills this page.
-            e.vh = annTag;
+          const e = getPage(st, pdfPath, page);
+          if (e !== null) {
+            e.vh = annTag; // the pixels this vision text was made from
           }
           markDocTouched(pdfPath);
         });
-      } else {
-        failed.push(page);
-        firstReason =
-          firstReason ??
-          (v as {reason?: string}).reason ??
-          'Vision returned nothing.';
       }
+      read++;
+      stored.push(page);
+      if (read % PAID_FLUSH_EVERY === 0) {
+        await flushStore(); // R1: bound the loss window on a hard kill
+      }
+      opts?.onProgress?.(read, pages.length);
+    } else if (v.ok) {
+      if (isPageLocked(await loadStore(), pdfPath, page)) {
+        lockSkipped.push(page); // lock landed during the vision call
+        continue;
+      }
+      // The request LANDED and vision had nothing to add (a full-page
+      // figure): remember it durably, keyed to the doc's current hash.
+      // Without this the page was re-billed 3 attempts per SESSION,
+      // every session, forever (full review 2026-08-02 #8 — the
+      // in-memory fail cap re-arms at each restart).
+      const dh = getDocHash(await loadStore(), pdfPath);
+      await mutateStore(st => {
+        // Round 14 #2/#7: doc-aware, BEFORE any entry creation, and an
+        // exact `false` so a refusal schedules no persist/notify.
+        if (isPageLocked(st, pdfPath, page)) {
+          return false;
+        }
+        let e = getPage(st, pdfPath, page);
+        if (e === null) {
+          // A page with no entry whose vision came back empty: create the
+          // negative-cache entry so the marker has a home. Annotated pages
+          // always needed this; since lot 1 (2026-08-16) a CLEARED plain
+          // page of a covered PDF is missing-entry Vision debt too, and
+          // without the stub it would never leave pendingVisionPages —
+          // re-billed 3 attempts per session, every session (the exact
+          // 2026-08-02 #8 class this cache exists to prevent).
+          const fresh = makePageEntry(
+            '',
+            'mistral-ocr',
+            {hash: ''},
+            Date.now(),
+          );
+          if (opts?.eph === true) {
+            // Audit 2 #3: the twin of the manual writer — an Off-doc
+            // read must mark its stub ephemeral here too, or the boot
+            // sweep leaves an Off document holding an entry.
+            fresh.eph = true;
+          }
+          upsertPage(st, pdfPath, page, fresh, Date.now());
+          e = getPage(st, pdfPath, page);
+        }
+        if (e !== null && e.source === 'mistral-ocr') {
+          // Annotated: keyed to ITS pixels. Plain: keyed to the doc.
+          e.va = annTag ?? `d:${dh}`;
+        } else if (e !== null && e.source === 'medium' && annTag !== null) {
+          // Audit 9 #2: a 'medium' annotated page whose recheck returned
+          // empty keeps its old text — but the CURRENT pixels must be
+          // recorded, or every future doorbell re-bills this page.
+          e.vh = annTag;
+        }
+        markDocTouched(pdfPath);
+      });
+    } else {
+      failed.push(page);
+      firstReason =
+        firstReason ??
+        (v as {reason?: string}).reason ??
+        'Vision returned nothing.';
     }
-  } finally {
-    endLiveRead();
   }
   return {
     read,
@@ -2456,8 +2451,7 @@ const resumePdfVision = async (
   const uncapped = [...pending, ...recheck].filter(
     p2 => !failCapped('vision', pdfPath, p2),
   );
-  const capSkipped =
-    pending.length + recheck.length - uncapped.length;
+  const capSkipped = pending.length + recheck.length - uncapped.length;
   const todo = uncapped.sort((a, b) => a - b);
   if (todo.length === 0) {
     if (doorbell && listOk && !anyLockedAnnotated && capSkipped === 0) {
@@ -2603,10 +2597,7 @@ export const readPdf = async (
         // bounded cost — a renamed PDF re-pays its read once (~0.4 ¢/page).
         // Same-name adoption above (name+bytes, safe) stays.
       }
-      if (
-        !opts?.force &&
-        pdfPrintedCovered(store.docs[pdfPath], byteLen)
-      ) {
+      if (!opts?.force && pdfPrintedCovered(store.docs[pdfPath], byteLen)) {
         // Printed bytes covered: no re-OCR ever. The unified resume pass
         // finishes any Vision debt AND re-checks annotated pages when the
         // .mark doorbell moved (Phase B: their per-page pixel hash decides,
@@ -2633,7 +2624,12 @@ export const readPdf = async (
         } else {
           const res = await fetch(`file://${pdfPath}`);
           if (!res.ok) {
-            return {ok: false, read: 0, failed: [], reason: 'Cannot read the PDF.'};
+            return {
+              ok: false,
+              read: 0,
+              failed: [],
+              reason: 'Cannot read the PDF.',
+            };
           }
           b64 = bytesToBase64(new Uint8Array(await res.arrayBuffer()));
         }
@@ -2647,10 +2643,7 @@ export const readPdf = async (
       const buf = await res.arrayBuffer();
       byteLen = buf.byteLength;
       const store = await loadStore();
-      if (
-        !opts?.force &&
-        pdfPrintedCovered(store.docs[pdfPath], byteLen)
-      ) {
+      if (!opts?.force && pdfPrintedCovered(store.docs[pdfPath], byteLen)) {
         // Printed bytes covered: no re-OCR ever. The unified resume pass
         // finishes any Vision debt AND re-checks annotated pages when the
         // .mark doorbell moved (Phase B: their per-page pixel hash decides,
@@ -2679,7 +2672,12 @@ export const readPdf = async (
   // enter JS); otherwise fall back to the in-JS base64. Either way release b64
   // right after OCR so it is not held through the per-page Vision pass.
   const r = useNativePost
-    ? await ocrPdf(nativeFileFetch(pdfPath), apiKey, '__FILE_B64__', opts?.signal)
+    ? await ocrPdf(
+        nativeFileFetch(pdfPath),
+        apiKey,
+        '__FILE_B64__',
+        opts?.signal,
+      )
     : await ocrPdf(fetchAdapter, apiKey, b64, opts?.signal);
   b64 = '';
   if (!r.ok) {
@@ -2710,7 +2708,13 @@ export const readPdf = async (
         lockSkipped.add(p.page);
         continue;
       }
-      const e = makePageEntry(p.text, 'mistral-ocr', {hash: ''}, Date.now(), p.low);
+      const e = makePageEntry(
+        p.text,
+        'mistral-ocr',
+        {hash: ''},
+        Date.now(),
+        p.low,
+      );
       if (opts?.eph === true) {
         e.eph = true; // OFF-doc read only (v0.92.1: never keyed to offOk)
       }
@@ -2802,12 +2806,19 @@ export const readPdf = async (
     };
   }
   const allPages = r.pages.map(p => p.page).sort((a, b) => a - b);
-  const vr = await visionPassPdf(deps, apiKey, visionSystem, pdfPath, allPages, {
-    signal: opts?.signal,
-    onProgress: () => opts?.onProgress?.(),
-    eph: opts?.eph === true,
-    seenRenders: new Map<string, string>(),
-  });
+  const vr = await visionPassPdf(
+    deps,
+    apiKey,
+    visionSystem,
+    pdfPath,
+    allPages,
+    {
+      signal: opts?.signal,
+      onProgress: () => opts?.onProgress?.(),
+      eph: opts?.eph === true,
+      seenRenders: new Map<string, string>(),
+    },
+  );
   console.log(
     '[SmartNoteAI.read]',
     `ocr: ${r.pages.length} PDF page(s) stored, ${vr.read} read with Vision` +

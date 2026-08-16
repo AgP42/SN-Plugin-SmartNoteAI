@@ -24,6 +24,7 @@ const baseProps = (over: Partial<React.ComponentProps<typeof BrainDropdown>> = {
     styles,
     open: true,
     effectiveModel: 'mistral-medium-latest',
+    resolvedModel: '',
     entries,
     agentId: null,
     busy: false,
@@ -62,6 +63,22 @@ describe('BrainDropdown smoke', () => {
     expect(t).toContain('● 💬 Chat · medium'); // CHAT active
     expect(t).toContain('○ 📚 Thèse · large · 3 docs · 120 p');
     expect(t).toContain('800 cached −90%');
+  });
+
+  // Lot C (c) 2026-08-16: the served-version echo, restored. Shown only
+  // when the API's answer differs from the configured id — an exact
+  // match (or no request yet, '') adds nothing.
+  it('resolved model: shown as an arrow only when it differs', () => {
+    const shown = texts(
+      render(baseProps({resolvedModel: 'mistral-medium-2508'})),
+    );
+    expect(shown).toContain(
+      'mistral-medium-latest → mistral-medium-2508',
+    );
+    const same = texts(
+      render(baseProps({resolvedModel: 'mistral-medium-latest'})),
+    );
+    expect(same).not.toContain('→');
   });
 
   it('picking an agent forwards it and closes; New chat / History wired', () => {

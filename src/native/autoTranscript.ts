@@ -112,6 +112,11 @@ export const hydrateRecentAutoSyncs = async (): Promise<void> => {
     // memory list stays; next record persists it anyway
   }
 };
+// Restored in lot C (2026-08-17): the display died collaterally in the
+// v0.69.0 frame rewrite ONE DAY after the user requested it — the recorder
+// had been writing into a void for four weeks.
+export const getRecentAutoSyncs = (): readonly RecentAutoSync[] =>
+  recentAutoSyncs;
 const recordAutoSync = (name: string, pages: number): void => {
   recentAutoSyncs.unshift({name, at: Date.now(), pages});
   recentAutoSyncs.length = Math.min(recentAutoSyncs.length, 5);
@@ -184,7 +189,8 @@ const FOREGROUND_STALE_MS = 20 * 60_000;
 let foregroundBusyCount = 0;
 let foregroundBusyAt = 0;
 const isForegroundBusy = (): boolean =>
-  foregroundBusyCount > 0 && Date.now() - foregroundBusyAt < FOREGROUND_STALE_MS;
+  foregroundBusyCount > 0 &&
+  Date.now() - foregroundBusyAt < FOREGROUND_STALE_MS;
 export const setForegroundBusy = (v: boolean): void => {
   if (v) {
     foregroundBusyCount++;
@@ -428,7 +434,9 @@ export const recordOwed = async (
   const now = Date.now();
   let readPages = precomputedReadPages;
   if (readPages === undefined) {
-    const need = await pagesNeedingRead(deps, notePath, wanted).catch(() => null);
+    const need = await pagesNeedingRead(deps, notePath, wanted).catch(
+      () => null,
+    );
     if (need === null) {
       return; // change-check failed — keep the last good count
     }
@@ -646,7 +654,10 @@ export const autoTranscriptTick = async (
               : ((rawPg as {result?: unknown})?.result as number);
           currentPage = typeof pg === 'number' ? pg : null;
           if (opts?.skipCurrentFlush !== true) {
-            console.log('[SmartNoteAI.auto]', `flush current note ${p.split('/').pop()}`);
+            console.log(
+              '[SmartNoteAI.auto]',
+              `flush current note ${p.split('/').pop()}`,
+            );
             await deps.saveCurrentNote().catch(() => undefined);
             await sleepHybrid(600); // freeze-proof (audit C2)
             invalidateNoteCache(p);
@@ -810,7 +821,10 @@ export const autoTranscriptTick = async (
           continue; // a PDF has no free structural scan
         }
         if (key === null) {
-          console.log('[SmartNoteAI.auto]', `${name}: PDF needs the API key → skip`);
+          console.log(
+            '[SmartNoteAI.auto]',
+            `${name}: PDF needs the API key → skip`,
+          );
           continue;
         }
         // v0.87 host split: the OCR step runs under ANY host (it reads the
@@ -1118,9 +1132,7 @@ export const autoTranscriptTick = async (
       let failSkipped = false;
       {
         const before = needed.length;
-        needed = needed.filter(
-          p => !failCapped('read', notePath, p),
-        );
+        needed = needed.filter(p => !failCapped('read', notePath, p));
         if (needed.length !== before) {
           failSkipped = true;
           console.log(
@@ -1164,7 +1176,9 @@ export const autoTranscriptTick = async (
         needed = needed.filter(p => p !== currentPage);
         console.log(
           '[SmartNoteAI.auto]',
-          `${name}: deferring current page p.${currentPage + 1} (read once you leave it)`,
+          `${name}: deferring current page p.${
+            currentPage + 1
+          } (read once you leave it)`,
         );
       }
       console.log(
@@ -1186,7 +1200,6 @@ export const autoTranscriptTick = async (
           assembleVisionPrompt(settings.promptBlocks),
           notePath,
           todo,
-
         ).catch(() => ({
           ok: false,
           read: 0,
@@ -1226,9 +1239,21 @@ export const autoTranscriptTick = async (
             clearFailure('read', notePath, p);
           }
         }
-        if (!r.ok && r.reason !== undefined && /Network error/i.test(r.reason)) {
-          console.log('[SmartNoteAI.auto]', `offline, tick aborted (${r.reason})`);
-          return {ran: true, notesChecked: checked, pagesRead, reason: r.reason};
+        if (
+          !r.ok &&
+          r.reason !== undefined &&
+          /Network error/i.test(r.reason)
+        ) {
+          console.log(
+            '[SmartNoteAI.auto]',
+            `offline, tick aborted (${r.reason})`,
+          );
+          return {
+            ran: true,
+            notesChecked: checked,
+            pagesRead,
+            reason: r.reason,
+          };
         }
         if (!r.ok) {
           // v0.78.7: surface WHY — the live read path only said "failed to
@@ -1276,12 +1301,7 @@ export const autoTranscriptTick = async (
       // recordOwed still derives the DISJOINT vision from that empty read set, so
       // OCR-only pages awaiting Vision remain visible (round-7 audit: passing 0
       // there hard-set vision=0 and hid the Vision backlog).
-      await recordOwed(
-        deps,
-        notePath,
-        wanted,
-        fullyCovered ? [] : undefined,
-      );
+      await recordOwed(deps, notePath, wanted, fullyCovered ? [] : undefined);
     }
     // v0.87 Vision drain — "no OCR-only page left behind" (user rule
     // 2026-07-30): finish the Vision leg of every stored OCR-only page the
@@ -1301,7 +1321,12 @@ export const autoTranscriptTick = async (
     // v0.88.3: a kind whose render probe failed <60 s ago is not re-probed
     // (force pokes re-probe at once — the "user switched apps" moments).
     const nowP = Date.now();
-    const allowNote = renderAllowed('note', hostKind, opts?.force === true, nowP);
+    const allowNote = renderAllowed(
+      'note',
+      hostKind,
+      opts?.force === true,
+      nowP,
+    );
     const allowPdf = renderAllowed('pdf', hostKind, opts?.force === true, nowP);
     if (
       key !== null &&
@@ -1351,7 +1376,9 @@ export const autoTranscriptTick = async (
             '[SmartNoteAI.auto]',
             `vision drain: ${fv.read} page(s) finished` +
               (fv.pending > 0 ? `, ${fv.pending} still pending` : '') +
-              (fv.truncated > 0 ? `, ${fv.truncated} over budget → draining` : ''),
+              (fv.truncated > 0
+                ? `, ${fv.truncated} over budget → draining`
+                : ''),
           );
         }
         if (
@@ -1395,7 +1422,9 @@ export const autoTranscriptTick = async (
     // clears (in the finally) and is Stop-able like any tick. Vision pages
     // over this tick's budget (truncated) drain the same way.
     const draining =
-      (postponed > 0 || visionTruncated > 0) && pagesRead > 0 && !stopRequested();
+      (postponed > 0 || visionTruncated > 0) &&
+      pagesRead > 0 &&
+      !stopRequested();
     // The user's standing order travels with ITS backlog: drain-continue
     // ticks of an attended sync stay attended (uncapped); once the backlog
     // is done, background work goes back under the backstop.

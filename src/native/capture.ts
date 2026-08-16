@@ -82,14 +82,13 @@ let scratchN = 0;
 // same time (a chat/tick read + a heartbeat-driven wave-2 catch-up) —
 // and concurrent generateNotePng/generateDocImage calls fight over the
 // note engine (device-verified: blank/partial renders, which the paid
-// models then read as truth). Two guards, both consumed by reading.ts
-// and pretranscript.ts:
-//  1. serializeRender — EVERY native render goes through one promise
-//     chain: two flows alternate whole renders instead of interleaving.
-//  2. live-read marker — the on-demand paid flows (chat gather, agent
-//     gaps, tick reads) mark themselves; the background collect defers
-//     its whole wave while one is active (renders are free, the wave-1
-//     job stays pending and rides the next check).
+// models then read as truth). One guard, consumed by reading.ts and
+// pretranscript.ts: serializeRender — EVERY native render goes through
+// one promise chain, so two flows alternate whole renders instead of
+// interleaving. (A second "live-read marker" guard lost its only reader
+// with the batch removal on 2026-07-22 and was purged in lot C (b),
+// 2026-08-16 — the foreground/background arbitration now lives in
+// autoTranscript's setForegroundBusy.)
 let renderChain: Promise<unknown> = Promise.resolve();
 export const serializeRender = <T>(fn: () => Promise<T>): Promise<T> => {
   const run = renderChain.then(fn, fn);
@@ -99,15 +98,6 @@ export const serializeRender = <T>(fn: () => Promise<T>): Promise<T> => {
   );
   return run;
 };
-
-let liveReads = 0;
-export const beginLiveRead = (): void => {
-  liveReads++;
-};
-export const endLiveRead = (): void => {
-  liveReads = Math.max(0, liveReads - 1);
-};
-export const isLiveReadActive = (): boolean => liveReads > 0;
 
 // Native rotate helper (v0.52, rotated pages). Optional: absent on an
 // old plugin binary → the un-rotated image is used as before.
@@ -158,23 +148,10 @@ export const readFileB64Native = async (
   }
 };
 
-// UI-doc-open marker (v0.63.2): while the user browses a document in
-// the Library, the wave-2 catch-up must not steal the note engine and
-// the JS thread — same idea as the page-count sweep pause (v0.42.1).
-// TIMESTAMPED (v0.63.5, audit): PluginHost keeps the JS tree mounted
-// when the view closes, so the React effect cleanup does NOT run when
-// the user taps ✕ / "Go to page" while a doc is open — the flag used to
-// stick TRUE forever and block even the DOWNLOAD of finished batch jobs
-// ("4 PDFs at Mistral since yesterday", mechanism #2). Now it expires
-// on its own: each page opened renews it; ~2 min after the last
-// interaction it goes stale on its own, whatever close path was taken.
-const UI_DOC_STALE_MS = 120_000;
-let uiDocOpenAt = 0;
-export const setUiDocOpen = (open: boolean): void => {
-  uiDocOpenAt = open ? Date.now() : 0;
-};
-export const isUiDocOpen = (): boolean =>
-  uiDocOpenAt > 0 && Date.now() - uiDocOpenAt < UI_DOC_STALE_MS;
+// (The UI-doc-open browse marker — v0.63.2/v0.63.5 — was removed in
+// lot C (b), 2026-08-16: v0.68 deliberately dropped its only reader so
+// browsing no longer blocks the collect; the writer had been shouting
+// into a void ever since.)
 
 export const asString = (raw: unknown): string | null => {
   if (typeof raw === 'string') {

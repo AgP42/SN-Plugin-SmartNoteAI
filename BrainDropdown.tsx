@@ -20,6 +20,11 @@ export function BrainDropdown(props: {
   styles: PanelStyles;
   open: boolean;
   effectiveModel: string;
+  // The exact model version the API last served (resolves '-latest'
+  // aliases). Lot C (c) 2026-08-16: the panel kept recording it after
+  // v0.78.1 dropped its only display — restored here, shown only when
+  // it differs from the configured id.
+  resolvedModel: string;
   entries: BrainEntry[];
   agentId: string | null;
   busy: boolean;
@@ -49,6 +54,10 @@ export function BrainDropdown(props: {
         <View style={{flex: 1}}>
           <Text style={styles.brainMeta} numberOfLines={1}>
             {props.effectiveModel}
+            {props.resolvedModel.length > 0 &&
+            props.resolvedModel !== props.effectiveModel
+              ? ` → ${props.resolvedModel}`
+              : ''}
           </Text>
           {/* v0.80.1 (user): the active agent's knowledge, spelled out. */}
           {props.activeStats !== null ? (

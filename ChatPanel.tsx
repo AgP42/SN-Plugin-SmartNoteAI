@@ -37,7 +37,10 @@ import {PluginManager} from 'sn-plugin-lib';
 import {DEFAULT_MODEL} from './src/core/config/keyFile';
 import {sendChat} from './src/core/model/mistral';
 import type {ChatTurn, ModelConfig} from './src/core/model/types';
-import {styleTemperature, DEFAULT_CHAT_MAX_TOKENS} from './src/core/model/types';
+import {
+  styleTemperature,
+  DEFAULT_CHAT_MAX_TOKENS,
+} from './src/core/model/types';
 import {modelSupportsTools} from './src/native/modelCaps';
 import {
   composeAddedText,
@@ -115,7 +118,14 @@ import {
 } from './src/core/agents/agents';
 import {FULL_PAGE_READ_CENTS} from './src/core/model/reader';
 import {OCR_COST_CENTS} from './src/core/model/ocr';
-import {SRC_LABEL, fmtDay, fmtDateTime, baseName, srcLabelFor, srcLongFor} from './src/ui/labels';
+import {
+  SRC_LABEL,
+  fmtDay,
+  fmtDateTime,
+  baseName,
+  srcLabelFor,
+  srcLongFor,
+} from './src/ui/labels';
 import {useArmedConfirm} from './src/ui/useArmedConfirm';
 import {gatherContext, parseScope} from './src/native/gatherContext';
 import {invalidateNoteCache} from './src/native/noteTranscripts';
@@ -489,13 +499,19 @@ export default function ChatPanel({
   const [voletDraft, setVoletDraft] = useState<string>('');
   // One-tap-confirm guards (shared hook, phase 4 §2.1): overwriting a
   // manual ('user') entry, and deleting a conversation from the history.
-  const {armed: confirmOverwrite, confirm: confirmOv, disarm: disarmOv} =
-    useArmedConfirm(4000);
+  const {
+    armed: confirmOverwrite,
+    confirm: confirmOv,
+    disarm: disarmOv,
+  } = useArmedConfirm(4000);
   // Historique (v0.21): list sheet + resume bookkeeping.
   const [histOpen, setHistOpen] = useState<boolean>(false);
   const [histList, setHistList] = useState<ConvMeta[]>([]);
-  const {armed: confirmDelId, confirm: confirmDel, disarm: disarmDel} =
-    useArmedConfirm(3000);
+  const {
+    armed: confirmDelId,
+    confirm: confirmDel,
+    disarm: disarmDel,
+  } = useArmedConfirm(3000);
   // Origin note of a RESUMED conversation when it differs from the page
   // on screen ("↩ born on X", decided U4). '' = no reminder.
   const [bornOn, setBornOn] = useState<string>('');
@@ -841,7 +857,9 @@ export default function ChatPanel({
         }).length;
         setVoletEntry({
           text: sections.join('\n\n'),
-          label: `${ctxMode === 'note' ? 'whole note' : 'range'} · ${read}/${pages.length} pages read`,
+          label: `${ctxMode === 'note' ? 'whole note' : 'range'} · ${read}/${
+            pages.length
+          } pages read`,
         });
         return;
       }
@@ -897,14 +915,15 @@ export default function ChatPanel({
   }, [cap]);
 
   const send = useCallback(
-    async (
-      text: string,
-      flags?: {skipEstimate?: boolean},
-    ) => {
+    async (text: string, flags?: {skipEstimate?: boolean}) => {
       // busyRef, not the closure `busy`: two taps landing in the same frame
       // both saw busy=false in their render's closure and ran two sends that
       // corrupted each other's history (audit 2026-07-18).
-      if (keyState.kind !== 'ok' || text.trim().length === 0 || busyRef.current) {
+      if (
+        keyState.kind !== 'ok' ||
+        text.trim().length === 0 ||
+        busyRef.current
+      ) {
         return;
       }
       busyRef.current = true;
@@ -928,8 +947,7 @@ export default function ChatPanel({
         // DEFAULT (ctxImages ⇒ ctxPageOff auto-set true), but the user can
         // put the page back via the existing control — so the switch is
         // ctxPageOff, not "has image". Agent docs always ride regardless.
-        const includeContext =
-          !contextSent && capture !== null && !ctxPageOff;
+        const includeContext = !contextSent && capture !== null && !ctxPageOff;
         // Note name (basename, no extension) labelling the transcripts, so
         // a conversation that spans a note switch stays unambiguous.
         const noteName = capture
@@ -976,7 +994,9 @@ export default function ChatPanel({
             // is never persisted, consent or not.
             setCtxImages(cur =>
               cur.map(c =>
-                c.src !== undefined && offSet.has(c.src) ? {...c, off: true} : c,
+                c.src !== undefined && offSet.has(c.src)
+                  ? {...c, off: true}
+                  : c,
               ),
             );
           }
@@ -987,7 +1007,10 @@ export default function ChatPanel({
         if (blocked !== null) {
           pendingRef.current = {text};
           setOffAsk({
-            doc: blocked === offPath ? noteName : blocked.split('/').pop() ?? blocked,
+            doc:
+              blocked === offPath
+                ? noteName
+                : blocked.split('/').pop() ?? blocked,
             path: blocked,
           });
           return;
@@ -1194,7 +1217,9 @@ export default function ChatPanel({
         if (wireImages.length < ctxImages.length) {
           console.warn(
             '[SmartNoteAI.chat]',
-            `${ctxImages.length - wireImages.length} lassoed image(s) left out ` +
+            `${
+              ctxImages.length - wireImages.length
+            } lassoed image(s) left out ` +
               '— their source note could not be verified (privacy).',
           );
         }
@@ -1530,80 +1555,88 @@ export default function ChatPanel({
 
   // "Re-read" (Transcript sheet): re-run the configured engine on the
   // current page (or the whole PDF) and replace the store entry.
-  const onReread = useCallback(async (rotateDeg?: number) => {
-    const capture = capRef.current;
-    // busyRef too: a Re-read during a busy send double-read the same page
-    // and its setContextSent(false) was overwritten by the send's finish
-    // (audit 2026-07-18).
-    if (capture === null || keyState.kind !== 'ok' || rereading || busyRef.current) {
-      return;
-    }
-    // Phase A (spec S5): an explicit action on a LOCKED page refuses
-    // loudly — it never obeys and never bypasses (round-8: this path
-    // ignored locks entirely).
-    {
-      const st = await loadStore();
-      if (isPageLocked(st, capture.notePath, capture.page)) {
-        setOffline('🔒 Page locked — unlock it in the Library to re-read.');
+  const onReread = useCallback(
+    async (rotateDeg?: number) => {
+      const capture = capRef.current;
+      // busyRef too: a Re-read during a busy send double-read the same page
+      // and its setContextSent(false) was overwritten by the send's finish
+      // (audit 2026-07-18).
+      if (
+        capture === null ||
+        keyState.kind !== 'ok' ||
+        rereading ||
+        busyRef.current
+      ) {
         return;
       }
-      if (!canPersistDoc(capture.notePath)) {
-        // Audit 9 #3: same rule as the Library — never pay for a read the
-        // store cannot keep this session.
-        setOffline(STORAGE_UNAVAILABLE_MSG);
+      // Phase A (spec S5): an explicit action on a LOCKED page refuses
+      // loudly — it never obeys and never bypasses (round-8: this path
+      // ignored locks entirely).
+      {
+        const st = await loadStore();
+        if (isPageLocked(st, capture.notePath, capture.page)) {
+          setOffline('🔒 Page locked — unlock it in the Library to re-read.');
+          return;
+        }
+        if (!canPersistDoc(capture.notePath)) {
+          // Audit 9 #3: same rule as the Library — never pay for a read the
+          // store cannot keep this session.
+          setOffline(STORAGE_UNAVAILABLE_MSG);
+          return;
+        }
+      }
+      if (!guardOverwrite('reread')) {
         return;
       }
-    }
-    if (!guardOverwrite('reread')) {
-      return;
-    }
-    setRereading(true);
-    // v0.80.0 (audit M2): a paid re-read is Stop-able like a send — the
-    // underlying readers already honour an AbortSignal.
-    const ctl = new AbortController();
-    rereadAbortRef.current = ctl;
-    try {
-      let r: {ok: boolean; reason?: string} = {ok: true};
-      if (isNotePath(capture.notePath)) {
-        r = await readNotePages(
-          captureBridge(),
-          keyState.config.apiKey,
-          await freshVisionSystem(),
-          capture.notePath,
-          [capture.page],
-          {force: true, rotateDeg, signal: ctl.signal},
-        );
-      } else if (/\.pdf$/i.test(capture.notePath)) {
-        // ONE page, never the document (release audit 2026-08-12, critical):
-        // this used to call readPdf(force) — which skips the covered check
-        // and re-OCRs the WHOLE file, then re-Visions every page of it. On a
-        // 400-page PDF that is ~1.60 € per tap, with no dialog, and it
-        // overwrote every stored transcript including unlocked hand
-        // corrections. The Library's twin button was fixed for exactly this
-        // reason (see its comment); this copy had been left behind.
-        r = await readPdfPageVision(
-          captureBridge(),
-          keyState.config.apiKey,
-          await freshPdfVisionSystem(),
-          capture.notePath,
-          capture.page,
-          {signal: ctl.signal},
-        );
+      setRereading(true);
+      // v0.80.0 (audit M2): a paid re-read is Stop-able like a send — the
+      // underlying readers already honour an AbortSignal.
+      const ctl = new AbortController();
+      rereadAbortRef.current = ctl;
+      try {
+        let r: {ok: boolean; reason?: string} = {ok: true};
+        if (isNotePath(capture.notePath)) {
+          r = await readNotePages(
+            captureBridge(),
+            keyState.config.apiKey,
+            await freshVisionSystem(),
+            capture.notePath,
+            [capture.page],
+            {force: true, rotateDeg, signal: ctl.signal},
+          );
+        } else if (/\.pdf$/i.test(capture.notePath)) {
+          // ONE page, never the document (release audit 2026-08-12, critical):
+          // this used to call readPdf(force) — which skips the covered check
+          // and re-OCRs the WHOLE file, then re-Visions every page of it. On a
+          // 400-page PDF that is ~1.60 € per tap, with no dialog, and it
+          // overwrote every stored transcript including unlocked hand
+          // corrections. The Library's twin button was fixed for exactly this
+          // reason (see its comment); this copy had been left behind.
+          r = await readPdfPageVision(
+            captureBridge(),
+            keyState.config.apiKey,
+            await freshPdfVisionSystem(),
+            capture.notePath,
+            capture.page,
+            {signal: ctl.signal},
+          );
+        }
+        // Surface a refusal/failure (e.g. the Off gate) instead of silently
+        // keeping the old entry — the banner is the panel's message line.
+        // A SUCCESS can carry a reason too ("this page is blank", "vision
+        // found nothing to add"): the single-page PDF path returns one, and
+        // dropping it made a paid tap look like a no-op (verification pass
+        // 2026-08-12). The Library twin already shows it.
+        setOffline(r.reason ?? '');
+        // A fresh read is a better context than whatever was sent before.
+        setContextSent(false);
+      } finally {
+        rereadAbortRef.current = null;
+        setRereading(false);
       }
-      // Surface a refusal/failure (e.g. the Off gate) instead of silently
-      // keeping the old entry — the banner is the panel's message line.
-      // A SUCCESS can carry a reason too ("this page is blank", "vision
-      // found nothing to add"): the single-page PDF path returns one, and
-      // dropping it made a paid tap look like a no-op (verification pass
-      // 2026-08-12). The Library twin already shows it.
-      setOffline(r.reason ?? '');
-      // A fresh read is a better context than whatever was sent before.
-      setContextSent(false);
-    } finally {
-      rereadAbortRef.current = null;
-      setRereading(false);
-    }
-  }, [keyState, rereading, guardOverwrite]);
+    },
+    [keyState, rereading, guardOverwrite],
+  );
 
   // ("Improve" was retired in v0.52 — since v0.38 the Redo path is
   // already OCR→vision with the previous text as hint; two paid buttons
@@ -1721,7 +1754,11 @@ export default function ChatPanel({
         if (!d || d.total <= d.read) {
           continue;
         }
-        setProgress({label: `reading ${baseName(p)}`, done, total: unreadTotal});
+        setProgress({
+          label: `reading ${baseName(p)}`,
+          done,
+          total: unreadTotal,
+        });
         if (isNotePath(p)) {
           const toRead = Array.from({length: d.total}, (_, i) => i);
           const r = await readNotePages(
@@ -1733,11 +1770,12 @@ export default function ChatPanel({
             {
               shouldStop: () => stopRequested.current,
               signal: controller.signal,
-              onProgress: dd => setProgress({
-                label: `reading ${baseName(p)}`,
-                done: done + dd,
-                total: unreadTotal,
-              }),
+              onProgress: dd =>
+                setProgress({
+                  label: `reading ${baseName(p)}`,
+                  done: done + dd,
+                  total: unreadTotal,
+                }),
             },
           );
           done += r.read;
@@ -1786,25 +1824,22 @@ export default function ChatPanel({
   // transcribed page of `path` folded into pendingCtx (deduped, unsent).
   // Used by the search results (whole-note add) and the context sheet
   // (add the current note). Returns how many pages were newly added.
-  const onAddNoteToChat = useCallback(
-    async (path: string): Promise<number> => {
-      const store = await loadStore();
-      const pages = Object.entries(store.docs[path]?.pages ?? {})
-        .filter(([, e]) => e.text.trim().length > 0)
-        .map(([k]) => Number(k));
-      let added = 0;
-      setPendingCtx(list => {
-        const seen = new Set(list.map(x => `${x.path} ${x.page}`));
-        const add = pages
-          .filter(p => !seen.has(`${path} ${p}`))
-          .map(p => ({path, page: p}));
-        added = add.length;
-        return add.length > 0 ? [...list, ...add] : list;
-      });
-      return added;
-    },
-    [],
-  );
+  const onAddNoteToChat = useCallback(async (path: string): Promise<number> => {
+    const store = await loadStore();
+    const pages = Object.entries(store.docs[path]?.pages ?? {})
+      .filter(([, e]) => e.text.trim().length > 0)
+      .map(([k]) => Number(k));
+    let added = 0;
+    setPendingCtx(list => {
+      const seen = new Set(list.map(x => `${x.path} ${x.page}`));
+      const add = pages
+        .filter(p => !seen.has(`${path} ${p}`))
+        .map(p => ({path, page: p}));
+      added = add.length;
+      return add.length > 0 ? [...list, ...add] : list;
+    });
+    return added;
+  }, []);
 
   // "Read & add": a META hit (★/kw) with no transcript yet — one paid
   // page read (the overlay ran the two-tap cost confirm), then added.
@@ -2069,35 +2104,38 @@ export default function ChatPanel({
     setHistOpen(true);
   }, [disarmDel]);
 
-  const onResume = useCallback(async (meta: ConvMeta) => {
-    // Same rule as New chat: never swap conversations under a busy send.
-    if (busyRef.current) {
-      return;
-    }
-    persistNow(); // the outgoing conversation may have a turn < 600 ms old
-    const conv = await loadConversation(meta.id).catch(() => null);
-    setHistOpen(false);
-    if (conv === null) {
-      return;
-    }
-    setTurns(conv.turns);
-    convId.current = conv.id;
-    convCreatedAt.current = conv.createdAt;
-    offConsentedRef.current.clear(); // OFF consent is per-conversation (C5)
-    setContextSent(false); // fresh context will re-attach, labelled
-    setPendingCtx(conv.pendingCtx ?? []); // un-sent added pages survive
-    setCtxImages(conv.ctxImages ?? []); // v0.81: lasso images restored
-    // The conversation keeps talking to its agent; if the agent was
-    // deleted, send() falls back to standard Chat and the tag survives.
-    setAgentId(conv.agentId ?? null);
-    anchorIdx.current = null;
-    turnY.current = {};
-    setLastUsage(null);
-    const here = capRef.current?.notePath ?? '';
-    setBornOn(
-      conv.notePath.length > 0 && conv.notePath !== here ? conv.noteName : '',
-    );
-  }, [persistNow]);
+  const onResume = useCallback(
+    async (meta: ConvMeta) => {
+      // Same rule as New chat: never swap conversations under a busy send.
+      if (busyRef.current) {
+        return;
+      }
+      persistNow(); // the outgoing conversation may have a turn < 600 ms old
+      const conv = await loadConversation(meta.id).catch(() => null);
+      setHistOpen(false);
+      if (conv === null) {
+        return;
+      }
+      setTurns(conv.turns);
+      convId.current = conv.id;
+      convCreatedAt.current = conv.createdAt;
+      offConsentedRef.current.clear(); // OFF consent is per-conversation (C5)
+      setContextSent(false); // fresh context will re-attach, labelled
+      setPendingCtx(conv.pendingCtx ?? []); // un-sent added pages survive
+      setCtxImages(conv.ctxImages ?? []); // v0.81: lasso images restored
+      // The conversation keeps talking to its agent; if the agent was
+      // deleted, send() falls back to standard Chat and the tag survives.
+      setAgentId(conv.agentId ?? null);
+      anchorIdx.current = null;
+      turnY.current = {};
+      setLastUsage(null);
+      const here = capRef.current?.notePath ?? '';
+      setBornOn(
+        conv.notePath.length > 0 && conv.notePath !== here ? conv.noteName : '',
+      );
+    },
+    [persistNow],
+  );
 
   const onDeleteConv = useCallback(
     async (id: string) => {
@@ -2155,7 +2193,6 @@ export default function ChatPanel({
     }
   }, []);
 
-
   // Also blocked while a Refresh capture is in flight: a send started
   // then would still use the previous page's context.
   // Live tools capability for the one-shot buttons; static list fallback
@@ -2181,6 +2218,11 @@ export default function ChatPanel({
     (activeAgent !== null && activeAgent.model.trim().length > 0
       ? activeAgent.model.trim()
       : model) || DEFAULT_MODEL;
+  // Lot C (c): the resolution belongs to the model that SERVED it — a
+  // model/agent switch must not pair the new id with the old answer.
+  useEffect(() => {
+    setResolvedModel('');
+  }, [effectiveModel]);
   useEffect(() => {
     if (keyState.kind !== 'ok') {
       return;
@@ -2241,7 +2283,10 @@ export default function ChatPanel({
             setBrainOpen(v => !v);
             setSnapOpen(false);
           }}
-          style={[styles.headerBrain, {flexDirection: 'row', alignItems: 'center'}]}
+          style={[
+            styles.headerBrain,
+            {flexDirection: 'row', alignItems: 'center'},
+          ]}
           hitSlop={{top: 6, bottom: 6}}>
           {/* v0.80.0 (audit M5): the ▾ lives OUTSIDE the ellipsized name —
               a long agent name used to eat the only dropdown affordance. */}
@@ -2279,7 +2324,11 @@ export default function ChatPanel({
             }}
             style={[iconStyles.iconBtn, styles.snapTrigger]}
             hitSlop={{top: 8, bottom: 8}}>
-            <Image source={IC.default} style={iconStyles.icon} resizeMode="contain" />
+            <Image
+              source={IC.default}
+              style={iconStyles.icon}
+              resizeMode="contain"
+            />
             <Text style={styles.snapCaret}>▾</Text>
           </TouchableOpacity>
           <IconBtn src={IC.collapse} onPress={onCollapse} />
@@ -2330,14 +2379,13 @@ export default function ChatPanel({
         styles={styles}
         open={brainOpen}
         effectiveModel={effectiveModel}
+        resolvedModel={resolvedModel}
         entries={brainEntries}
         agentId={agentId}
         busy={busy}
         pendingCtxCount={pendingCtx.length}
         activeStats={
-          activeAgent !== null
-            ? agentStats.get(activeAgent.id) ?? null
-            : null
+          activeAgent !== null ? agentStats.get(activeAgent.id) ?? null : null
         }
         statsFor={id => agentStats.get(id)}
         modelLabelFor={a =>
@@ -2363,7 +2411,8 @@ export default function ChatPanel({
         {/* v0.80.1 (user): the active agent's KNOWLEDGE is context too —
             make it visible ("Writer looked empty" with folders attached).
             Tap opens the brain dropdown, where the docs live. */}
-        {activeAgent !== null && agentStats.get(activeAgent.id) !== undefined ? (
+        {activeAgent !== null &&
+        agentStats.get(activeAgent.id) !== undefined ? (
           <TouchableOpacity
             onPress={() => {
               setBrainOpen(v => !v);
@@ -2423,7 +2472,8 @@ export default function ChatPanel({
                     : `p.${cap.page + 1}/${cap.totalPages}`
                 }`}
             {/* v0.80.1 (user): the "Chat context:" row label carries the
-                meaning now — no per-chip "to send" suffix. */} ▾
+                meaning now — no per-chip "to send" suffix. */}{' '}
+            ▾
           </Text>
         </TouchableOpacity>
         {pendingCtx.length > 0 ? (
@@ -2444,7 +2494,6 @@ export default function ChatPanel({
           <Text style={styles.ctxChipText}>＋</Text>
         </TouchableOpacity>
       </View>
-
 
       {searchOn ? (
         <SearchOverlay
@@ -2469,54 +2518,57 @@ export default function ChatPanel({
           }}
         />
       ) : (
-      <ScrollView
-        ref={scrollRef}
-        style={styles.chat}
-        contentContainerStyle={styles.chatContent}
-        onLayout={e => {
-          vpH.current = e.nativeEvent.layout.height;
-        }}
-        onScrollBeginDrag={() => {
-          // User took over — stop auto-anchoring.
-          anchorIdx.current = null;
-        }}
-        onContentSizeChange={(_w, h) => {
-          const idx = anchorIdx.current;
-          const y = idx != null ? turnY.current[idx] : undefined;
-          if (y != null) {
-            const maxY = Math.max(0, h - vpH.current);
-            scrollRef.current?.scrollTo({y: Math.min(y, maxY), animated: true});
-          }
-        }}>
-        {turns.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={[styles.hint, msgText]}>
-              {/* Release audit 2026-08-12: with no key the field is not even
+        <ScrollView
+          ref={scrollRef}
+          style={styles.chat}
+          contentContainerStyle={styles.chatContent}
+          onLayout={e => {
+            vpH.current = e.nativeEvent.layout.height;
+          }}
+          onScrollBeginDrag={() => {
+            // User took over — stop auto-anchoring.
+            anchorIdx.current = null;
+          }}
+          onContentSizeChange={(_w, h) => {
+            const idx = anchorIdx.current;
+            const y = idx != null ? turnY.current[idx] : undefined;
+            if (y != null) {
+              const maxY = Math.max(0, h - vpH.current);
+              scrollRef.current?.scrollTo({
+                y: Math.min(y, maxY),
+                animated: true,
+              });
+            }
+          }}>
+          {turns.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={[styles.hint, msgText]}>
+                {/* Release audit 2026-08-12: with no key the field is not even
                   editable and every action is greyed, and NOTHING said why —
                   a first-time user meets a plugin that looks broken. */}
-              {keyState.kind !== 'ok'
-                ? 'No Mistral API key yet. Open the menu → ⚙ Plugin configuration → 1 · API key, paste your key and save it — then come back here.'
-                : 'Ask about your page, or tap a quick action below.'}
-            </Text>
-          </View>
-        ) : (
-          turns.map((t, i) => (
-            <TurnBubble
-              key={i}
-              styles={styles}
-              turn={t}
-              index={i}
-              scale={scale}
-              msgText={msgText}
-              copied={copied}
-              onCopy={onCopy}
-              onLayout={e => {
-                turnY.current[i] = e.nativeEvent.layout.y;
-              }}
-            />
-          ))
-        )}
-      </ScrollView>
+                {keyState.kind !== 'ok'
+                  ? 'No Mistral API key yet. Open the menu → ⚙ Plugin configuration → 1 · API key, paste your key and save it — then come back here.'
+                  : 'Ask about your page, or tap a quick action below.'}
+              </Text>
+            </View>
+          ) : (
+            turns.map((t, i) => (
+              <TurnBubble
+                key={i}
+                styles={styles}
+                turn={t}
+                index={i}
+                scale={scale}
+                msgText={msgText}
+                copied={copied}
+                onCopy={onCopy}
+                onLayout={e => {
+                  turnY.current[i] = e.nativeEvent.layout.y;
+                }}
+              />
+            ))
+          )}
+        </ScrollView>
       )}
 
       {/* v0.79.9: the busy bar ALWAYS carries a Stop while a send/read is in
@@ -2621,8 +2673,14 @@ export default function ChatPanel({
         <TouchableOpacity
           onPress={() => toolsOk && setArmWeb(v => !v)}
           disabled={!toolsOk || busy}
-          style={[styles.oneShot, armWeb && styles.oneShotOn, (!toolsOk || busy) && styles.oneShotOff]}>
-          <Text style={[styles.oneShotText, armWeb && styles.oneShotTextOn]}>Web</Text>
+          style={[
+            styles.oneShot,
+            armWeb && styles.oneShotOn,
+            (!toolsOk || busy) && styles.oneShotOff,
+          ]}>
+          <Text style={[styles.oneShotText, armWeb && styles.oneShotTextOn]}>
+            Web
+          </Text>
         </TouchableOpacity>
         {busy ? (
           <TouchableOpacity onPress={onStop} style={styles.sendBtn}>
@@ -2670,7 +2728,10 @@ export default function ChatPanel({
                 // v0.81: the first (image) quick action is highlighted when a
                 // lasso image is in context.
                 i < imageQaActive.length && styles.qaChipHot,
-                {paddingHorizontal: 9 * btnScale, paddingVertical: 5 * btnScale},
+                {
+                  paddingHorizontal: 9 * btnScale,
+                  paddingVertical: 5 * btnScale,
+                },
                 // audit M3: an inert chip must LOOK inert on e-ink.
                 !canSend && {borderColor: '#999999'},
               ]}>
@@ -2693,7 +2754,9 @@ export default function ChatPanel({
         styles={styles}
         btnScale={btnScale}
         open={ctxOpen}
-        noteName={cap !== null ? cap.notePath.split('/').pop() || cap.notePath : null}
+        noteName={
+          cap !== null ? cap.notePath.split('/').pop() || cap.notePath : null
+        }
         ctxMode={ctxMode}
         setCtxMode={setCtxMode}
         rangeStart={rangeStart}
@@ -2800,7 +2863,9 @@ export default function ChatPanel({
                     PluginManager as {
                       showPluginView?: () => Promise<unknown>;
                     }
-                  ).showPluginView?.().catch(() => {});
+                  )
+                    .showPluginView?.()
+                    .catch(() => {});
                   setVoletOpen(false);
                   onClose();
                 }}
@@ -2857,8 +2922,8 @@ export default function ChatPanel({
               <View style={styles.sheetBtns}>
                 {voletOff ? (
                   <Text style={styles.offWarn}>
-                    ⚠ No transcript available: sync is set to "Off" for
-                    this note. You can still ask the Chat about it.
+                    ⚠ No transcript available: sync is set to "Off" for this
+                    note. You can still ask the Chat about it.
                   </Text>
                 ) : null}
                 <TouchableOpacity
@@ -2881,35 +2946,39 @@ export default function ChatPanel({
                   </TouchableOpacity>
                 ) : null}
                 {ctxMode !== 'page' ? null : (
-                <TouchableOpacity
-                  // v0.80.0 (audit M2): while a re-read runs, this SAME
-                  // button becomes its Stop — a paid call is never a
-                  // frozen wait.
-                  onPress={() =>
-                    rereading ? rereadAbortRef.current?.abort() : onReread()
-                  }
-                  disabled={!rereading && (voletOff || keyState.kind !== 'ok')}
-                  style={[
-                    styles.actBtn2,
-                    rereading && styles.actBtnBusy,
-                    // v0.80.1 (user): armed = inverted video, everywhere.
-                    confirmOverwrite === 'reread' && {backgroundColor: '#000000'},
-                    voletOff && styles.actBtnOff,
-                  ]}>
-                  <Text
+                  <TouchableOpacity
+                    // v0.80.0 (audit M2): while a re-read runs, this SAME
+                    // button becomes its Stop — a paid call is never a
+                    // frozen wait.
+                    onPress={() =>
+                      rereading ? rereadAbortRef.current?.abort() : onReread()
+                    }
+                    disabled={
+                      !rereading && (voletOff || keyState.kind !== 'ok')
+                    }
                     style={[
-                      styles.actBtn2Text,
-                      (rereading || confirmOverwrite === 'reread') && {
-                        color: '#ffffff',
+                      styles.actBtn2,
+                      rereading && styles.actBtnBusy,
+                      // v0.80.1 (user): armed = inverted video, everywhere.
+                      confirmOverwrite === 'reread' && {
+                        backgroundColor: '#000000',
                       },
+                      voletOff && styles.actBtnOff,
                     ]}>
-                    {rereading
-                      ? '⏹ Stop redo'
-                      : confirmOverwrite === 'reread'
-                      ? 'Overwrite manual edit?'
-                      : 'Redo AI transcript'}
-                  </Text>
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.actBtn2Text,
+                        (rereading || confirmOverwrite === 'reread') && {
+                          color: '#ffffff',
+                        },
+                      ]}>
+                      {rereading
+                        ? '⏹ Stop redo'
+                        : confirmOverwrite === 'reread'
+                        ? 'Overwrite manual edit?'
+                        : 'Redo AI transcript'}
+                    </Text>
+                  </TouchableOpacity>
                 )}
                 {/* Rotation is a NOTE-page operation: the single-page PDF
                     re-read has no rotate argument, so on a PDF these two
@@ -2917,30 +2986,24 @@ export default function ChatPanel({
                     2026-08-12). Hidden rather than lying. */}
                 {ctxMode !== 'page' ||
                 (cap !== null && !isNotePath(cap.notePath)) ? null : (
-                <>
-                <TouchableOpacity
-                  onPress={() => onReread(90)}
-                  disabled={rereading || voletOff || keyState.kind !== 'ok'}
-                  style={[
-                    styles.actBtn2,
-                    voletOff && styles.actBtnOff,
-                  ]}>
-                  <Text style={styles.actBtn2Text}>
-                    ↻ Rotate right + redo
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => onReread(270)}
-                  disabled={rereading || voletOff || keyState.kind !== 'ok'}
-                  style={[
-                    styles.actBtn2,
-                    voletOff && styles.actBtnOff,
-                  ]}>
-                  <Text style={styles.actBtn2Text}>
-                    ↺ Rotate left + redo
-                  </Text>
-                </TouchableOpacity>
-                </>
+                  <>
+                    <TouchableOpacity
+                      onPress={() => onReread(90)}
+                      disabled={rereading || voletOff || keyState.kind !== 'ok'}
+                      style={[styles.actBtn2, voletOff && styles.actBtnOff]}>
+                      <Text style={styles.actBtn2Text}>
+                        ↻ Rotate right + redo
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => onReread(270)}
+                      disabled={rereading || voletOff || keyState.kind !== 'ok'}
+                      style={[styles.actBtn2, voletOff && styles.actBtnOff]}>
+                      <Text style={styles.actBtn2Text}>
+                        ↺ Rotate left + redo
+                      </Text>
+                    </TouchableOpacity>
+                  </>
                 )}
               </View>
             )}

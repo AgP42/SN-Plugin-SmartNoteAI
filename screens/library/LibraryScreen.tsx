@@ -41,7 +41,11 @@ import SearchControls from '../../SearchControls';
 import ActivityBanner from '../../src/ui/ActivityBanner';
 import {setActivity} from '../../src/native/activity';
 import {mdToPlain} from '../../src/core/text/markdown';
-import {wordOffsets, replaceAtOffset, lowAfterFix} from '../../src/core/text/wordFix';
+import {
+  wordOffsets,
+  replaceAtOffset,
+  lowAfterFix,
+} from '../../src/core/text/wordFix';
 import {
   resolveAutoTarget,
   modeLabel,
@@ -50,6 +54,8 @@ import {
   type AutoMode,
 } from '../../src/core/store/autoEngine';
 import {
+  setForegroundBusy,
+  getRecentAutoSyncs,
   getLastSyncAt,
   getLastHostKind,
   isPdfVisionBlocked,
@@ -58,7 +64,8 @@ import {
   markManualSync,
   resolveTrackedNotes,
   autoTranscriptTick,
-  recordOwed} from '../../src/native/autoTranscript';
+  recordOwed,
+} from '../../src/native/autoTranscript';
 import {sleepHybrid} from '../../src/native/nativeSleep';
 import {pipelineFromStoreSplit} from '../../src/native/pipelineStats';
 import type {PipelineStages, TrackedTotal} from '../../src/core/store/pipeline';
@@ -116,7 +123,7 @@ import {
 // scope survives the screen's unmount — v0.47).
 const c4DoneOnce = {done: false};
 import {captureBridge} from '../../src/native/captureBridge';
-import {capturePageImage, setUiDocOpen} from '../../src/native/capture';
+import {capturePageImage} from '../../src/native/capture';
 import {listDirNative, listStorageVolumesNative} from '../../src/native/fs';
 import {
   countExportGaps,
@@ -328,9 +335,9 @@ function LibraryScreen({
   // filled in the background via the free getNoteTotalPageNum SDK call
   // (user requirement 2026-07-18: show every file's page count, whatever
   // its mode).
-  const [pageCounts, setPageCounts] = useState<Record<string, number>>(
-    () => ({...pageCountCache}),
-  );
+  const [pageCounts, setPageCounts] = useState<Record<string, number>>(() => ({
+    ...pageCountCache,
+  }));
   const [treeRoots, setTreeRoots] = useState<
     Array<{path: string; name: string}>
   >(rootsCache.list ?? TREE_ROOTS);
@@ -430,13 +437,20 @@ function LibraryScreen({
   // v0.80.0 (audit): ONE armed-confirm hook (keyed) replaces the three
   // hand-rolled state+setTimeout copies this screen had accumulated —
   // same 4 s auto-disarm everywhere (badges included).
-  const {armed: libArmed, confirm: libConfirm, disarm: libDisarm} =
-    useArmedConfirm(4000);
+  const {
+    armed: libArmed,
+    confirm: libConfirm,
+    disarm: libDisarm,
+  } = useArmedConfirm(4000);
   // #6 (user 2026-07-25): a row shows the icon of every agent it belongs to,
   // at the end of the row; tapping an icon asks to remove it from THAT agent
   // (tap-again to confirm, the same pattern as Clear all / Restore).
   const doRemoveFromAgentId = useCallback(
-    async (agentId: string, ref: string, kind: 'doc' | 'pages'): Promise<void> => {
+    async (
+      agentId: string,
+      ref: string,
+      kind: 'doc' | 'pages',
+    ): Promise<void> => {
       const ok = await removeFromAgent(agentId, ref, kind);
       if (ok) {
         refreshAgentsView();
@@ -447,10 +461,9 @@ function LibraryScreen({
   );
   // v0.63.2: while a document is open here, the background wave-2
   // catch-up defers its renders (same idea as the sweep pause).
-  useEffect(() => {
-    setUiDocOpen(browseDoc !== null);
-    return () => setUiDocOpen(false);
-  }, [browseDoc]);
+  // (The browse-marker effect was removed in lot C (b) 2026-08-16: its
+  // only reader died with v0.68's deliberate "browsing no longer blocks
+  // the collect" — the writer had been shouting into a void since.)
   const [browsePage, setBrowsePage] = useState<number | null>(null);
   const [browsePages, setBrowsePages] = useState<
     Array<{page: number; snippet: string; src: StoreSource | null}>
@@ -472,9 +485,7 @@ function LibraryScreen({
     orig: string;
     draft: string;
     nth: number;
-  } | null>(
-    null,
-  );
+  } | null>(null);
   // Library search (v0.25; advanced multi-criteria v0.25.9) + the
   // handwritten-page image in the page view. `searchActive` = a query is in
   // progress (base ≥2 chars or ≥1 advanced criterion) → show results, not
@@ -532,7 +543,9 @@ function LibraryScreen({
   // Tap-again confirm (Off files are never re-read, so this is deliberate).
   const onClearOffTranscripts = useCallback(async () => {
     const offPaths = lib
-      .filter(d => (resolveAutoTarget(autoTargets, d.path)?.mode ?? null) === 'off')
+      .filter(
+        d => (resolveAutoTarget(autoTargets, d.path)?.mode ?? null) === 'off',
+      )
       .map(d => d.path);
     if (offPaths.length === 0) {
       libDisarm();
@@ -552,9 +565,9 @@ function LibraryScreen({
   }, [libConfirm, libDisarm, lib, autoTargets, refreshLib, setMsg]);
   const [finishingVision, setFinishingVision] = useState<boolean>(false);
   // Which type's "Vision now" is running (so the label lands on the right bar).
-  const [finishVisionKind, setFinishVisionKind] = useState<'note' | 'pdf' | null>(
-    null,
-  );
+  const [finishVisionKind, setFinishVisionKind] = useState<
+    'note' | 'pdf' | null
+  >(null);
   // SYNC STATUS pipeline: the stage partition, computed async from the store
   // (per-page source), refreshed on lib change. v0.86: split by type — notes
   // and PDFs render under DIFFERENT hosts, so each gets its own bar + details.
@@ -595,96 +608,103 @@ function LibraryScreen({
   // 429/network — and kept its OCR text) through the LIVE engine again:
   // OCR 4 → Vision, storing 'medium'. On demand, instead of waiting for the
   // Auto cadence. Renders are native; the activity banner shows progress.
-  const finishVisionNow = useCallback(async (kind: 'note' | 'pdf') => {
-    if (finishingVision || keyState.kind !== 'ok') {
-      if (keyState.kind !== 'ok') {
-        setMsg('Add a Mistral API key first.');
+  const finishVisionNow = useCallback(
+    async (kind: 'note' | 'pdf') => {
+      if (finishingVision || keyState.kind !== 'ok') {
+        if (keyState.kind !== 'ok') {
+          setMsg('Add a Mistral API key first.');
+        }
+        return;
       }
-      return;
-    }
-    if (isDegradedLoad()) {
-      // Round 10 #0: a whole drain paid into a session that persists
-      // nothing would be money thrown away wholesale.
-      setMsg('⚠ Storage is degraded this session — restart the plugin before syncing.');
-      return;
-    }
-    // v0.87.2 (user): renders are host-bound, and we KNOW the host — don't
-    // launch a pass that has no chance (a 3742-page doomed run flooded the
-    // logs). The breaker in the read layer stays as the mid-pass safety net.
-    try {
-      const raw = (await captureBridge()
-        .getCurrentFilePath()
-        .catch(() => null)) as string | {result?: unknown} | null;
-      const p = typeof raw === 'string' ? raw : (raw?.result as string);
-      const host =
-        typeof p === 'string' && /\.pdf$/i.test(p)
-          ? 'pdf'
-          : typeof p === 'string' && /\.note$/i.test(p)
-          ? 'note'
-          : null;
-      if (host !== kind) {
+      if (isDegradedLoad()) {
+        // Round 10 #0: a whole drain paid into a session that persists
+        // nothing would be money thrown away wholesale.
         setMsg(
-          kind === 'pdf'
-            ? 'Open a PDF in the reader first: Vision renders there. It also runs by itself once one is open.'
-            : 'Open a note first: Vision renders there. It also runs by itself once one is open.',
+          '⚠ Storage is degraded this session — restart the plugin before syncing.',
         );
         return;
       }
-    } catch {
-      // host unknown → let the pass try; the render breaker bounds the cost
-    }
-    setFinishingVision(true);
-    setFinishVisionKind(kind);
-    // Progress rides the single activity banner (with its Stop); msg keeps
-    // only the terminal result (status-line rationalisation 2026-08-14).
-    setActivity({label: kind === 'pdf' ? 'Vision (PDF pages)' : 'Vision (note pages)'});
-    try {
-      const r = await finishVisionLive(
-        captureBridge(),
-        keyState.config.apiKey,
-        assembleVisionPrompt(promptBlocks),
-        {
-          kind,
-          // User-initiated tap with the matching host verified open —
-          // missing-page repair allowed (fix-audit round 3, 2026-08-16).
-          attendedHint: true,
-          onProgress: (d, t) =>
-            setActivity({label: 'Vision', done: d, total: t}),
-        },
-      );
-      await refreshLib().catch(() => {});
-      const wall = accountWallMsg(r.reason);
-      setMsg(
-        r.read > 0
-          ? `Vision done for ${r.read} page(s)` +
-            (r.pending > 0
-              ? `; ${r.pending} still pending${
-                  wall
-                    ? `: ${wall}`
-                    : r.reason
-                    ? `: ${r.reason}`
-                    : ' (Sync now retries them).'
-                }`
-              : '.')
-          : wall
-          ? wall
-          : r.pending > 0
-          ? // Surface the REAL Mistral reason instead of a vague "tap again":
-            // logcat is drowned by the SDK's verifyParams spam, so the message
-            // is the only reliable place to see why every page failed.
-            `${r.pending} page(s) could not be read${
-              r.reason ? `: ${r.reason}` : ', tap again in a minute'
-            }.`
-          : 'No OCR-only pages awaiting vision.',
-      );
-    } catch (e) {
-      setMsg(`Vision failed: ${String((e as Error).message ?? e)}`);
-    } finally {
-      setActivity(null); // banner clears itself
-      setFinishingVision(false);
-      setFinishVisionKind(null);
-    }
-  }, [finishingVision, keyState, promptBlocks, refreshLib, setMsg]);
+      // v0.87.2 (user): renders are host-bound, and we KNOW the host — don't
+      // launch a pass that has no chance (a 3742-page doomed run flooded the
+      // logs). The breaker in the read layer stays as the mid-pass safety net.
+      try {
+        const raw = (await captureBridge()
+          .getCurrentFilePath()
+          .catch(() => null)) as string | {result?: unknown} | null;
+        const p = typeof raw === 'string' ? raw : (raw?.result as string);
+        const host =
+          typeof p === 'string' && /\.pdf$/i.test(p)
+            ? 'pdf'
+            : typeof p === 'string' && /\.note$/i.test(p)
+            ? 'note'
+            : null;
+        if (host !== kind) {
+          setMsg(
+            kind === 'pdf'
+              ? 'Open a PDF in the reader first: Vision renders there. It also runs by itself once one is open.'
+              : 'Open a note first: Vision renders there. It also runs by itself once one is open.',
+          );
+          return;
+        }
+      } catch {
+        // host unknown → let the pass try; the render breaker bounds the cost
+      }
+      setFinishingVision(true);
+      setFinishVisionKind(kind);
+      // Progress rides the single activity banner (with its Stop); msg keeps
+      // only the terminal result (status-line rationalisation 2026-08-14).
+      setActivity({
+        label: kind === 'pdf' ? 'Vision (PDF pages)' : 'Vision (note pages)',
+      });
+      try {
+        const r = await finishVisionLive(
+          captureBridge(),
+          keyState.config.apiKey,
+          assembleVisionPrompt(promptBlocks),
+          {
+            kind,
+            // User-initiated tap with the matching host verified open —
+            // missing-page repair allowed (fix-audit round 3, 2026-08-16).
+            attendedHint: true,
+            onProgress: (d, t) =>
+              setActivity({label: 'Vision', done: d, total: t}),
+          },
+        );
+        await refreshLib().catch(() => {});
+        const wall = accountWallMsg(r.reason);
+        setMsg(
+          r.read > 0
+            ? `Vision done for ${r.read} page(s)` +
+                (r.pending > 0
+                  ? `; ${r.pending} still pending${
+                      wall
+                        ? `: ${wall}`
+                        : r.reason
+                        ? `: ${r.reason}`
+                        : ' (Sync now retries them).'
+                    }`
+                  : '.')
+            : wall
+            ? wall
+            : r.pending > 0
+            ? // Surface the REAL Mistral reason instead of a vague "tap again":
+              // logcat is drowned by the SDK's verifyParams spam, so the message
+              // is the only reliable place to see why every page failed.
+              `${r.pending} page(s) could not be read${
+                r.reason ? `: ${r.reason}` : ', tap again in a minute'
+              }.`
+            : 'No OCR-only pages awaiting vision.',
+        );
+      } catch (e) {
+        setMsg(`Vision failed: ${String((e as Error).message ?? e)}`);
+      } finally {
+        setActivity(null); // banner clears itself
+        setFinishingVision(false);
+        setFinishVisionKind(null);
+      }
+    },
+    [finishingVision, keyState, promptBlocks, refreshLib, setMsg],
+  );
 
   // Refresh the doc list on entering the Library (was screen-gated in
   // App; App still keeps `lib` fresh via its debounced store subscription
@@ -716,7 +736,11 @@ function LibraryScreen({
         modeFilter: 'manual',
         onProgress: name => setSyncingNote(name),
       });
-      for (let i = 0; i < 60 && !r.ran && /already running/i.test(r.reason ?? ''); i++) {
+      for (
+        let i = 0;
+        i < 60 && !r.ran && /already running/i.test(r.reason ?? '');
+        i++
+      ) {
         // The running pass already owns the activity banner; just wait.
         await sleepHybrid(2_000);
         r = await autoTranscriptTick(captureBridge(), {
@@ -766,7 +790,11 @@ function LibraryScreen({
         modeFilter: 'auto',
         onProgress: name => setSyncingNote(name),
       });
-      for (let i = 0; i < 60 && !r.ran && /already running/i.test(r.reason ?? ''); i++) {
+      for (
+        let i = 0;
+        i < 60 && !r.ran && /already running/i.test(r.reason ?? '');
+        i++
+      ) {
         // The running pass already owns the activity banner; just wait.
         await sleepHybrid(2_000);
         r = await autoTranscriptTick(captureBridge(), {
@@ -796,7 +824,6 @@ function LibraryScreen({
       setSyncKind(null);
     }
   }, [syncBusy, refreshLib, setMsg]);
-
 
   // Tree browser: list a folder's children (dirs + .note/.pdf), cached.
   const listFolder = useCallback(async (path: string) => {
@@ -1198,7 +1225,12 @@ function LibraryScreen({
           // PDF path. A raw `h !== String(size)` false-positived a covered
           // legacy-suffix PDF ("1000|m50" !== "1000") into an owed.read phantom
           // Sync-now could never clear (owed-lifecycle audit 2026-08-14).
-          if (h.length > 0 && size !== null && size > 0 && !pdfPrintedCovered(doc, size)) {
+          if (
+            h.length > 0 &&
+            size !== null &&
+            size > 0 &&
+            !pdfPrintedCovered(doc, size)
+          ) {
             // Whole-doc paid re-read: EVERY page re-reads, so pass the full page
             // list as the read set — recordOwed then derives vision=0 (every page
             // is in the read set, nothing owes Vision separately). A bare count
@@ -1263,7 +1295,11 @@ function LibraryScreen({
           ? ['inherit', 'off', 'manual', 'auto']
           : ['off', 'manual', 'auto'];
         const cur: AutoMode | 'inherit' =
-          m[path] === undefined ? (hasAncestor ? 'inherit' : DEFAULT_MODE) : m[path].mode;
+          m[path] === undefined
+            ? hasAncestor
+              ? 'inherit'
+              : DEFAULT_MODE
+            : m[path].mode;
         const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
         if (next === 'inherit') {
           return withoutOwn; // drop the override → follow the parent again
@@ -1325,9 +1361,7 @@ function LibraryScreen({
       const all = await loadStore();
       if (alive) {
         setLockedDocs(
-          new Set(
-            Object.keys(all.docs).filter(pth => isDocLocked(all, pth)),
-          ),
+          new Set(Object.keys(all.docs).filter(pth => isDocLocked(all, pth))),
         );
       }
       if (browseDoc === null) {
@@ -1355,7 +1389,9 @@ function LibraryScreen({
       await mutateStore(st2 => setPageLock(st2 as Store, path, page, on));
       await flushStore();
       setLockTick(t => t + 1);
-      setMsg(on ? '🔒 Page locked (no automatic re-read).' : '🔓 Page unlocked.');
+      setMsg(
+        on ? '🔒 Page locked (no automatic re-read).' : '🔓 Page unlocked.',
+      );
     },
     [setMsg],
   );
@@ -1389,7 +1425,9 @@ function LibraryScreen({
             onPress={() => cycleModeFor(path)}
             hitSlop={chipSlop}
             style={[styles.aChip, styles.aChipInh]}>
-            <Text style={styles.aChipInhText}>↳ Sync: {modeLabel(eff.mode)}</Text>
+            <Text style={styles.aChipInhText}>
+              ↳ Sync: {modeLabel(eff.mode)}
+            </Text>
           </TouchableOpacity>
         );
       }
@@ -1424,38 +1462,43 @@ function LibraryScreen({
     exportDoneTimer.current = setTimeout(() => setExportDone(null), 6000);
   }, []);
 
-  const doExport = useCallback(async (req: ExportReq) => {
-    setExporting(true);
-    try {
-      let written = 0;
-      let failed = 0;
-      for (const g of req.groups) {
-        const r = await runExport(captureBridge(), g.paths, {
-          fmt: req.fmt,
-          baseDir: g.baseDir,
-          selection: req.selection,
-          now: Date.now(),
-          onProgress: (l, d, t) =>
-            setActivity({label: `Exporting ${l}`, done: d, total: t}),
-        });
-        written += r.written.length;
-        failed += r.failed.length;
+  const doExport = useCallback(
+    async (req: ExportReq) => {
+      setExporting(true);
+      try {
+        let written = 0;
+        let failed = 0;
+        for (const g of req.groups) {
+          const r = await runExport(captureBridge(), g.paths, {
+            fmt: req.fmt,
+            baseDir: g.baseDir,
+            selection: req.selection,
+            now: Date.now(),
+            onProgress: (l, d, t) =>
+              setActivity({label: `Exporting ${l}`, done: d, total: t}),
+          });
+          written += r.written.length;
+          failed += r.failed.length;
+        }
+        setMsg(
+          `⇪ ${written} document(s) exported to /EXPORT (.${req.fmt})` +
+            (failed > 0 ? ` · ${failed} failed` : '') +
+            (req.offSkipped > 0
+              ? ` · ${req.offSkipped} Off file(s) skipped`
+              : ''),
+        );
+        if (written > 0 && failed === 0) {
+          markExportDone(`${req.label}|${req.fmt}`);
+        }
+      } catch (e) {
+        setMsg(`⚠ Export failed: ${(e as Error)?.message ?? String(e)}`);
+      } finally {
+        setActivity(null);
+        setExporting(false);
       }
-      setMsg(
-        `⇪ ${written} document(s) exported to /EXPORT (.${req.fmt})` +
-          (failed > 0 ? ` · ${failed} failed` : '') +
-          (req.offSkipped > 0 ? ` · ${req.offSkipped} Off file(s) skipped` : ''),
-      );
-      if (written > 0 && failed === 0) {
-        markExportDone(`${req.label}|${req.fmt}`);
-      }
-    } catch (e) {
-      setMsg(`⚠ Export failed: ${(e as Error)?.message ?? String(e)}`);
-    } finally {
-      setActivity(null);
-      setExporting(false);
-    }
-  }, [setMsg, markExportDone]);
+    },
+    [setMsg, markExportDone],
+  );
 
   // Entry point for every Export button: filter Off files, count what is
   // missing, then export directly (complete) or ask (read first / partial).
@@ -1493,7 +1536,13 @@ function LibraryScreen({
         );
         return;
       }
-      const req: ExportReq = {groups: resolved, fmt, label, selection, offSkipped};
+      const req: ExportReq = {
+        groups: resolved,
+        fmt,
+        label,
+        selection,
+        offSkipped,
+      };
       try {
         const all = resolved.flatMap(g => g.paths);
         const gaps = await countExportGaps(captureBridge(), all, selection);
@@ -1518,68 +1567,82 @@ function LibraryScreen({
   // "Read then export": fill the gaps at the regular price (same read
   // paths, same batch-pending guards as everywhere), then export.
   const readThenExport = useCallback(async () => {
-    if (exportAsk === null || keyState.kind !== 'ok') {
-      return;
-    }
-    const apiKey = keyState.config.apiKey;
-    const req = exportAsk;
-    setExportAsk(null);
-    setExporting(true);
+    // Lot C (a) 2026-08-16: a FOREGROUND paid read — without the flag it
+    // contended with a mid-flight auto tick for the shared rate budget
+    // (429 on the user's own action) and left a narrow same-page
+    // double-pay window (the marker covering it died with the batch
+    // removal on 2026-07-22).
+    setForegroundBusy(true);
     try {
-      const allPaths = req.groups.flatMap(g => g.paths);
-      for (const [i, path] of allPaths.entries()) {
-        setActivity({label: 'Reading for export', done: i + 1, total: allPaths.length});
-        if (isNotePath(path)) {
-          let range = req.selection;
-          if (range === undefined) {
-            let total = 0;
-            try {
-              const raw = await captureBridge().getNoteTotalPageNum(path);
-              const n =
-                typeof raw === 'number'
-                  ? raw
-                  : ((raw as {result?: unknown})?.result as number);
-              total = typeof n === 'number' && n > 0 ? n : 0;
-            } catch {
-              // fall back to the store's view below
+      if (exportAsk === null || keyState.kind !== 'ok') {
+        return;
+      }
+      const apiKey = keyState.config.apiKey;
+      const req = exportAsk;
+      setExportAsk(null);
+      setExporting(true);
+      try {
+        const allPaths = req.groups.flatMap(g => g.paths);
+        for (const [i, path] of allPaths.entries()) {
+          setActivity({
+            label: 'Reading for export',
+            done: i + 1,
+            total: allPaths.length,
+          });
+          if (isNotePath(path)) {
+            let range = req.selection;
+            if (range === undefined) {
+              let total = 0;
+              try {
+                const raw = await captureBridge().getNoteTotalPageNum(path);
+                const n =
+                  typeof raw === 'number'
+                    ? raw
+                    : ((raw as {result?: unknown})?.result as number);
+                total = typeof n === 'number' && n > 0 ? n : 0;
+              } catch {
+                // fall back to the store's view below
+              }
+              if (total === 0) {
+                total = docPageCount(await loadStore(), path);
+              }
+              range = Array.from({length: total}, (_, k) => k);
             }
-            if (total === 0) {
-              total = docPageCount(await loadStore(), path);
+            const needed = await pagesNeedingRead(
+              captureBridge(),
+              path,
+              range,
+            ).catch(() => [] as number[]);
+            if (needed.length > 0) {
+              await readNotePages(
+                captureBridge(),
+                apiKey,
+                assembleVisionPrompt(promptBlocks),
+                path,
+                needed,
+              ).catch(() => {});
             }
-            range = Array.from({length: total}, (_, k) => k);
-          }
-          const needed = await pagesNeedingRead(
-            captureBridge(),
-            path,
-            range,
-          ).catch(() => [] as number[]);
-          if (needed.length > 0) {
-            await readNotePages(
-              captureBridge(),
-              apiKey,
-              assembleVisionPrompt(promptBlocks),
-              path,
-              needed,
-            ).catch(() => {});
-          }
-        } else {
-          if (docPageCount(await loadStore(), path) === 0) {
-            await readPdf(
-              captureBridge(),
-              apiKey,
-              assemblePdfVisionPrompt(promptBlocks),
-              path,
-              {attended: true}, // Library tap — user-initiated
-            ).catch(() => {});
+          } else {
+            if (docPageCount(await loadStore(), path) === 0) {
+              await readPdf(
+                captureBridge(),
+                apiKey,
+                assemblePdfVisionPrompt(promptBlocks),
+                path,
+                {attended: true}, // Library tap — user-initiated
+              ).catch(() => {});
+            }
           }
         }
+        refreshLib().catch(() => {});
+        setActivity(null); // doExport sets its own banner from here
+        await doExport(req);
+      } finally {
+        setActivity(null);
+        setExporting(false);
       }
-      refreshLib().catch(() => {});
-      setActivity(null); // doExport sets its own banner from here
-      await doExport(req);
     } finally {
-      setActivity(null);
-      setExporting(false);
+      setForegroundBusy(false);
     }
   }, [exportAsk, keyState, promptBlocks, doExport, refreshLib]);
 
@@ -1794,7 +1857,10 @@ function LibraryScreen({
     // #6: the agents this exact path directly belongs to (whole-doc or, for a
     // file, a page-set). Inherited-via-parent-folder membership is not shown
     // as a removable badge (you'd remove the folder, not this file).
-    const renderAgentBadges = (fp: string, isDir: boolean): React.JSX.Element[] =>
+    const renderAgentBadges = (
+      fp: string,
+      isDir: boolean,
+    ): React.JSX.Element[] =>
       agentsView
         .map(ag => {
           const kind: 'doc' | 'pages' | null = ag.docs.includes(fp)
@@ -2060,8 +2126,7 @@ function LibraryScreen({
   // Lot 2 (2026-08-03): the aggregation is a pure function in
   // syncFrameModel.ts — testable money math, out of the screen.
   const syncFrame = useMemo(
-    () =>
-      computeSyncFrame(lib, treeCache, autoTargets, pageCounts),
+    () => computeSyncFrame(lib, treeCache, autoTargets, pageCounts),
     [lib, treeCache, autoTargets, pageCounts],
   );
 
@@ -2090,7 +2155,6 @@ function LibraryScreen({
       if (pageReq.current !== req) {
         return; // a newer openPage superseded this one
       }
-      setUiDocOpen(true); // renew the browse marker (v0.63.5)
       setBrowsePage(page);
       setPageEditing(false);
       setWordFix(null);
@@ -2322,63 +2386,80 @@ function LibraryScreen({
   // pages written sideways on a portrait canvas (device page 9 case).
   const rereadPage = useCallback(
     async (rotateDeg?: number) => {
-      if (browseDoc === null || browsePage === null || pageBusy) {
-        return;
-      }
-      if (keyState.kind !== 'ok') {
-        return;
-      }
-      const apiKey = keyState.config.apiKey;
-      // v0.94: a lock is the user's own freeze. An explicit redo does not
-      // silently ignore it — it says so and does nothing.
-      if (isPageLocked(await loadStore(), browseDoc, browsePage)) {
-        setMsg('🔒 This page is locked — unlock it to re-read.');
-        return;
-      }
-      if (!canPersistDoc(browseDoc)) {
-        // Audit 9 #3: paying for a read whose result cannot be persisted
-        // this session (unreadable shard) would be money thrown away.
-        setMsg(STORAGE_UNAVAILABLE_MSG);
-        return;
-      }
-      setPageBusy(true);
+      // Lot C (a): same foreground marker as readThenExport.
+      setForegroundBusy(true);
       try {
-        let r: {ok: boolean; reason?: string} = {ok: true};
-        if (isNotePath(browseDoc)) {
-          r = await readNotePages(
-            captureBridge(),
-            apiKey,
-            assembleVisionPrompt(promptBlocks),
-            browseDoc,
-            [browsePage],
-            {force: true, rotateDeg},
-          );
-        } else if (/\.pdf$/i.test(browseDoc)) {
-          // Redo on a PDF page re-reads THAT page with Vision — never the whole
-          // document. readPdf(force) reloaded the ENTIRE PDF into a base64
-          // string (~40 MB on a big file), which OOM-crashed the 192 MB plugin
-          // heap right after a manual +Vision (device report 2026-07-29).
-          r = await readPdfPageVision(
-            captureBridge(),
-            apiKey,
-            assemblePdfVisionPrompt(promptBlocks),
-            browseDoc,
-            browsePage,
-          );
+        if (browseDoc === null || browsePage === null || pageBusy) {
+          return;
         }
-        // Surface a refusal (the Off gate lives in reading.ts, and since
-        // v0.94 it covers the PDF single-page path too) or a failure,
-        // instead of silently showing the unchanged entry. A SUCCESS may
-        // also carry a reason — "nothing to add", "page is blank" — and it
-        // is shown plainly: it is an answer, not a warning (2026-08-03).
-        setMsg(r.reason !== undefined ? (r.ok ? r.reason : `⚠ ${r.reason}`) : '');
-        await openPage(browsePage);
-        refreshLib().catch(() => {});
+        if (keyState.kind !== 'ok') {
+          return;
+        }
+        const apiKey = keyState.config.apiKey;
+        // v0.94: a lock is the user's own freeze. An explicit redo does not
+        // silently ignore it — it says so and does nothing.
+        if (isPageLocked(await loadStore(), browseDoc, browsePage)) {
+          setMsg('🔒 This page is locked — unlock it to re-read.');
+          return;
+        }
+        if (!canPersistDoc(browseDoc)) {
+          // Audit 9 #3: paying for a read whose result cannot be persisted
+          // this session (unreadable shard) would be money thrown away.
+          setMsg(STORAGE_UNAVAILABLE_MSG);
+          return;
+        }
+        setPageBusy(true);
+        try {
+          let r: {ok: boolean; reason?: string} = {ok: true};
+          if (isNotePath(browseDoc)) {
+            r = await readNotePages(
+              captureBridge(),
+              apiKey,
+              assembleVisionPrompt(promptBlocks),
+              browseDoc,
+              [browsePage],
+              {force: true, rotateDeg},
+            );
+          } else if (/\.pdf$/i.test(browseDoc)) {
+            // Redo on a PDF page re-reads THAT page with Vision — never the whole
+            // document. readPdf(force) reloaded the ENTIRE PDF into a base64
+            // string (~40 MB on a big file), which OOM-crashed the 192 MB plugin
+            // heap right after a manual +Vision (device report 2026-07-29).
+            r = await readPdfPageVision(
+              captureBridge(),
+              apiKey,
+              assemblePdfVisionPrompt(promptBlocks),
+              browseDoc,
+              browsePage,
+            );
+          }
+          // Surface a refusal (the Off gate lives in reading.ts, and since
+          // v0.94 it covers the PDF single-page path too) or a failure,
+          // instead of silently showing the unchanged entry. A SUCCESS may
+          // also carry a reason — "nothing to add", "page is blank" — and it
+          // is shown plainly: it is an answer, not a warning (2026-08-03).
+          setMsg(
+            r.reason !== undefined ? (r.ok ? r.reason : `⚠ ${r.reason}`) : '',
+          );
+          await openPage(browsePage);
+          refreshLib().catch(() => {});
+        } finally {
+          setPageBusy(false);
+        }
       } finally {
-        setPageBusy(false);
+        setForegroundBusy(false);
       }
     },
-    [browseDoc, browsePage, keyState, pageBusy, promptBlocks, openPage, refreshLib, setMsg],
+    [
+      browseDoc,
+      browsePage,
+      keyState,
+      pageBusy,
+      promptBlocks,
+      openPage,
+      refreshLib,
+      setMsg,
+    ],
   );
 
   // Option A (v0.84): PDFs get OCR+Vision on every page automatically, so the
@@ -2444,48 +2525,52 @@ function LibraryScreen({
   // "Go to this page" (Library page view): open the note/PDF at this page
   // and close the config so it's visible. Store pages are 0-indexed; the
   // native intent wants a 1-based page.
-  const goToNotePage = useCallback((path: string, page: number) => {
-    const ov = (
-      SmartNoteAiOverlay as {
-        openNoteAt?: (p: string, page: number) => Promise<unknown>;
-      }
-    ).openNoteAt;
-    // Release audit 2026-08-12: the outcome was discarded and the config
-    // closed anyway, so on a device whose note-app component differs the
-    // button silently did nothing and left the user staring at their page.
-    // The native side RESOLVES {success:false} — it does not reject.
-    let opened: Promise<unknown> | null = null;
-    try {
-      const r = ov?.(path, page + 1);
-      opened =
-        r && typeof (r as Promise<unknown>).then === 'function'
-          ? (r as Promise<unknown>)
-          : null;
-    } catch {
-      // best-effort
-    }
-    opened
-      ?.then(res => {
-        if ((res as {success?: boolean})?.success === false) {
-          ToastAndroid.show(
-            'Could not open that document on this device.',
-            ToastAndroid.LONG,
-          );
+  const goToNotePage = useCallback(
+    (path: string, page: number) => {
+      const ov = (
+        SmartNoteAiOverlay as {
+          openNoteAt?: (p: string, page: number) => Promise<unknown>;
         }
-      })
-      .catch(() => {});
-    setUiDocOpen(false); // leaving the config — release the browse marker
-    const close = (): void => {
-      setTimeout(() => PluginManager.closePluginView(), 150);
-    };
-    // Flush the debounced settings save first (v0.88 audit) — this is the
-    // one closePluginView call site that skipped it.
-    if (flushSettings !== undefined) {
-      flushSettings().catch(() => {}).then(close);
-    } else {
-      close();
-    }
-  }, [flushSettings]);
+      ).openNoteAt;
+      // Release audit 2026-08-12: the outcome was discarded and the config
+      // closed anyway, so on a device whose note-app component differs the
+      // button silently did nothing and left the user staring at their page.
+      // The native side RESOLVES {success:false} — it does not reject.
+      let opened: Promise<unknown> | null = null;
+      try {
+        const r = ov?.(path, page + 1);
+        opened =
+          r && typeof (r as Promise<unknown>).then === 'function'
+            ? (r as Promise<unknown>)
+            : null;
+      } catch {
+        // best-effort
+      }
+      opened
+        ?.then(res => {
+          if ((res as {success?: boolean})?.success === false) {
+            ToastAndroid.show(
+              'Could not open that document on this device.',
+              ToastAndroid.LONG,
+            );
+          }
+        })
+        .catch(() => {});
+      const close = (): void => {
+        setTimeout(() => PluginManager.closePluginView(), 150);
+      };
+      // Flush the debounced settings save first (v0.88 audit) — this is the
+      // one closePluginView call site that skipped it.
+      if (flushSettings !== undefined) {
+        flushSettings()
+          .catch(() => {})
+          .then(close);
+      } else {
+        close();
+      }
+    },
+    [flushSettings],
+  );
 
   const bp = {paddingHorizontal: 12 * btnScale, paddingVertical: 7 * btnScale};
   const bf = {fontSize: 13 * btnScale};
@@ -2534,7 +2619,7 @@ function LibraryScreen({
     </View>
   );
 
-    // Page view (deepest level of the library browser) — Library screen.
+  // Page view (deepest level of the library browser) — Library screen.
   if (browseDoc !== null && browsePage !== null) {
     return (
       <PageView
@@ -2577,64 +2662,64 @@ function LibraryScreen({
     );
   }
 
-    // EXPORT "read first?" dialog — rendered on the grid AND main screens.
-    const exportAskCard =
-      exportAsk === null ? null : (
-        <View style={[styles.qaCard, styles.gapTop]}>
-          <Text style={[styles.label, lf]}>⇪ Export {exportAsk.label}</Text>
-          <Text style={[styles.manual, mf]}>
-            {exportAsk.notePages > 0
-              ? `${exportAsk.notePages} page(s) not read yet (~${eurosTotal(
-                  exportAsk.notePages,
-                  FULL_PAGE_READ_CENTS,
-                )}€). `
-              : ''}
-            {/* Release audit 2026-08-12: "one cheap OCR call each" was
+  // EXPORT "read first?" dialog — rendered on the grid AND main screens.
+  const exportAskCard =
+    exportAsk === null ? null : (
+      <View style={[styles.qaCard, styles.gapTop]}>
+        <Text style={[styles.label, lf]}>⇪ Export {exportAsk.label}</Text>
+        <Text style={[styles.manual, mf]}>
+          {exportAsk.notePages > 0
+            ? `${exportAsk.notePages} page(s) not read yet (~${eurosTotal(
+                exportAsk.notePages,
+                FULL_PAGE_READ_CENTS,
+              )}€). `
+            : ''}
+          {/* Release audit 2026-08-12: "one cheap OCR call each" was
                 false and expensive — reading an unread PDF OCRs EVERY page
                 of it and then runs a Vision call per page. Say so. */}
-            {exportAsk.pdfDocs > 0
-              ? `${exportAsk.pdfDocs} PDF(s) not read yet — each one is read in FULL (every page, OCR + Vision), and their length is not known in advance. `
-              : ''}
-            Read them first, or export what the library has (gaps are marked)?
-          </Text>
-          <View style={[styles.chips, styles.gapTop]}>
-            {exportAsk.canRead ? (
-              <TouchableOpacity
-                onPress={readThenExport}
-                style={[styles.chip, bp, styles.chipOn]}>
-                <Text style={[styles.chipText, bf, styles.chipTextOn]}>
-                  Read then export
-                </Text>
-              </TouchableOpacity>
-            ) : null}
+          {exportAsk.pdfDocs > 0
+            ? `${exportAsk.pdfDocs} PDF(s) not read yet — each one is read in FULL (every page, OCR + Vision), and their length is not known in advance. `
+            : ''}
+          Read them first, or export what the library has (gaps are marked)?
+        </Text>
+        <View style={[styles.chips, styles.gapTop]}>
+          {exportAsk.canRead ? (
             <TouchableOpacity
-              onPress={() => {
-                const r = exportAsk;
-                setExportAsk(null);
-                doExport(r);
-              }}
-              style={[styles.chip, bp]}>
-              <Text style={[styles.chipText, bf]}>Export incomplete</Text>
+              onPress={readThenExport}
+              style={[styles.chip, bp, styles.chipOn]}>
+              <Text style={[styles.chipText, bf, styles.chipTextOn]}>
+                Read then export
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setExportAsk(null)}
-              style={[styles.chip, bp]}>
-              <Text style={[styles.chipText, bf]}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-          {!exportAsk.canRead ? (
-            <Text style={[styles.modelNote, nf]}>
-              Reading needs an API key (screen 1).
-            </Text>
           ) : null}
+          <TouchableOpacity
+            onPress={() => {
+              const r = exportAsk;
+              setExportAsk(null);
+              doExport(r);
+            }}
+            style={[styles.chip, bp]}>
+            <Text style={[styles.chipText, bf]}>Export incomplete</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setExportAsk(null)}
+            style={[styles.chip, bp]}>
+            <Text style={[styles.chipText, bf]}>Cancel</Text>
+          </TouchableOpacity>
         </View>
-      );
+        {!exportAsk.canRead ? (
+          <Text style={[styles.modelNote, nf]}>
+            Reading needs an API key (screen 1).
+          </Text>
+        ) : null}
+      </View>
+    );
 
-    // Pages list of one document.
+  // Pages list of one document.
   if (browseDoc !== null) {
     return (
       <PageGrid
-          exportDone={exportDone}
+        exportDone={exportDone}
         browseDoc={browseDoc}
         browsePages={browsePages}
         exportSel={exportSel}
@@ -2661,260 +2746,293 @@ function LibraryScreen({
     );
   }
 
-    // ================ Library (search + browse + manage) ================
-    return (
-      <View style={styles.root}>
-        {subHeader(
-          // v0.83.2 (user): header identical to the LIBRARY door (H15).
-          '📚 LIBRARY: browse, sync & fix your transcripts',
-          () => {
-            setSearchActive(false);
-            setSearchHits([]);
-            // v0.88.2 (user): the Library is reached from the MENU — back
-            // goes there and SAYS so (the label still read "Config").
-            goHome();
-          },
-          'Menu',
-        )}
-        {ctxFlash.length > 0 ? (
-          <Text style={[styles.ctxFlash, nf]}>{ctxFlash}</Text>
-        ) : null}
-        <ScrollView contentContainerStyle={styles.body}>
-          <Text style={[styles.section, sf]}>Search</Text>
-          <SearchControls
+  // ================ Library (search + browse + manage) ================
+  return (
+    <View style={styles.root}>
+      {subHeader(
+        // v0.83.2 (user): header identical to the LIBRARY door (H15).
+        '📚 LIBRARY: browse, sync & fix your transcripts',
+        () => {
+          setSearchActive(false);
+          setSearchHits([]);
+          // v0.88.2 (user): the Library is reached from the MENU — back
+          // goes there and SAYS so (the label still read "Config").
+          goHome();
+        },
+        'Menu',
+      )}
+      {ctxFlash.length > 0 ? (
+        <Text style={[styles.ctxFlash, nf]}>{ctxFlash}</Text>
+      ) : null}
+      <ScrollView contentContainerStyle={styles.body}>
+        <Text style={[styles.section, sf]}>Search</Text>
+        <SearchControls
+          scale={scale}
+          onResults={(h, a) => {
+            setSearchHits(h);
+            setSearchActive(a);
+          }}
+        />
+        {searchActive ? (
+          <SearchHitsList
+            hits={searchHits}
+            autoTargets={autoTargets}
+            agents={pickerAgents}
             scale={scale}
-            onResults={(h, a) => {
-              setSearchHits(h);
-              setSearchActive(a);
-            }}
+            btnScale={btnScale}
+            onOpenHit={openHit}
+            onGoToPage={goToNotePage}
+            onAddContext={onAddContext}
           />
-          {searchActive ? (
-            <SearchHitsList
-              hits={searchHits}
-              autoTargets={autoTargets}
-              agents={pickerAgents}
-              scale={scale}
-              btnScale={btnScale}
-              onOpenHit={openHit}
-              onGoToPage={goToNotePage}
-              onAddContext={onAddContext}
-            />
-          ) : (
-            <>
-              {/* v0.79.13 (user): the whole-library actions live ABOVE the
+        ) : (
+          <>
+            {/* v0.79.13 (user): the whole-library actions live ABOVE the
                   SYNCHRONISATION block, next to Clear all — Export, Back up,
                   Restore, then the (renamed, warned) Clear all Transcript. */}
-              <View style={[styles.libSectionRow, {flexWrap: 'wrap'}]}>
-                <Text style={[styles.section, sf]}>All notes &amp; PDFs</Text>
-                <View style={styles.flex1} />
-                <TouchableOpacity
-                  onPress={() => exportAll('md')}
-                  disabled={exporting}
-                  style={styles.clearMini}>
-                  <Text style={styles.clearMiniText}>
-                    {exportDone === 'library|md' ? '✓ ' : ''}Export all .md
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => exportAll('txt')}
-                  disabled={exporting}
-                  style={styles.clearMini}>
-                  <Text style={styles.clearMiniText}>
-                    {exportDone === 'library|txt' ? '✓ ' : ''}Export all .txt
-                  </Text>
-                </TouchableOpacity>
-                {/* full transcript-library backup (a single restorable file). */}
-                <TouchableOpacity
-                  onPress={onBackupLibrary}
-                  style={styles.clearMini}>
-                  <Text style={styles.clearMiniText}>⤓ Back up library</Text>
-                </TouchableOpacity>
-                {/* v0.80.1 (user): EVERY armed confirm goes inverted video —
+            <View style={[styles.libSectionRow, {flexWrap: 'wrap'}]}>
+              <Text style={[styles.section, sf]}>All notes &amp; PDFs</Text>
+              <View style={styles.flex1} />
+              <TouchableOpacity
+                onPress={() => exportAll('md')}
+                disabled={exporting}
+                style={styles.clearMini}>
+                <Text style={styles.clearMiniText}>
+                  {exportDone === 'library|md' ? '✓ ' : ''}Export all .md
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => exportAll('txt')}
+                disabled={exporting}
+                style={styles.clearMini}>
+                <Text style={styles.clearMiniText}>
+                  {exportDone === 'library|txt' ? '✓ ' : ''}Export all .txt
+                </Text>
+              </TouchableOpacity>
+              {/* full transcript-library backup (a single restorable file). */}
+              <TouchableOpacity
+                onPress={onBackupLibrary}
+                style={styles.clearMini}>
+                <Text style={styles.clearMiniText}>⤓ Back up library</Text>
+              </TouchableOpacity>
+              {/* v0.80.1 (user): EVERY armed confirm goes inverted video —
                     one visual language for "tap again to do it". */}
+              <TouchableOpacity
+                onPress={onRestoreLibrary}
+                style={[
+                  styles.clearMini,
+                  libArmed === 'libImport' && {backgroundColor: '#000000'},
+                ]}>
+                <Text
+                  style={[
+                    styles.clearMiniText,
+                    libArmed === 'libImport' && {color: '#ffffff'},
+                  ]}>
+                  {libArmed === 'libImport'
+                    ? 'Restore backup? (tap again)'
+                    : '⤒ Restore backup'}
+                </Text>
+              </TouchableOpacity>
+              {lib.length > 0 ? (
                 <TouchableOpacity
-                  onPress={onRestoreLibrary}
+                  onPress={onClearOffTranscripts}
                   style={[
                     styles.clearMini,
-                    libArmed === 'libImport' && {backgroundColor: '#000000'},
+                    libArmed === 'clearOff' && {backgroundColor: '#000000'},
                   ]}>
                   <Text
                     style={[
                       styles.clearMiniText,
-                      libArmed === 'libImport' && {color: '#ffffff'},
+                      libArmed === 'clearOff' && {color: '#ffffff'},
                     ]}>
-                    {libArmed === 'libImport'
-                      ? 'Restore backup? (tap again)'
-                      : '⤒ Restore backup'}
+                    {libArmed === 'clearOff'
+                      ? 'Clear Off-note transcripts? (tap again)'
+                      : 'Clear transcripts of Off notes'}
                   </Text>
                 </TouchableOpacity>
-                {lib.length > 0 ? (
-                  <TouchableOpacity
-                    onPress={onClearOffTranscripts}
+              ) : null}
+              {lib.length > 0 ? (
+                <TouchableOpacity
+                  onPress={clearAll}
+                  style={[
+                    styles.clearMini,
+                    // v0.80.0 (audit H2): the armed state of the most
+                    // destructive action must be UNMISSABLE — inverted
+                    // style + explicit wording, not a trailing "?".
+                    confirmClear === 'ALL' && {backgroundColor: '#000000'},
+                  ]}>
+                  <Text
                     style={[
-                      styles.clearMini,
-                      libArmed === 'clearOff' && {backgroundColor: '#000000'},
+                      styles.clearMiniText,
+                      confirmClear === 'ALL' && {color: '#ffffff'},
                     ]}>
-                    <Text
-                      style={[
-                        styles.clearMiniText,
-                        libArmed === 'clearOff' && {color: '#ffffff'},
-                      ]}>
-                      {libArmed === 'clearOff'
-                        ? 'Clear Off-note transcripts? (tap again)'
-                        : 'Clear transcripts of Off notes'}
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
-                {lib.length > 0 ? (
-                  <TouchableOpacity
-                    onPress={clearAll}
-                    style={[
-                      styles.clearMini,
-                      // v0.80.0 (audit H2): the armed state of the most
-                      // destructive action must be UNMISSABLE — inverted
-                      // style + explicit wording, not a trailing "?".
-                      confirmClear === 'ALL' && {backgroundColor: '#000000'},
-                    ]}>
-                    <Text
-                      style={[
-                        styles.clearMiniText,
-                        confirmClear === 'ALL' && {color: '#ffffff'},
-                      ]}>
-                      {confirmClear === 'ALL'
-                        ? '⚠ Tap again: wipe ALL transcripts'
-                        : '⚠ Clear all transcripts'}
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-              {/* v0.80.0 (audit H5): action feedback lives right under the
+                    {confirmClear === 'ALL'
+                      ? '⚠ Tap again: wipe ALL transcripts'
+                      : '⚠ Clear all transcripts'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            {/* v0.80.0 (audit H5): action feedback lives right under the
                   buttons that caused it (backup/restore/export/clear), not
                   buried inside the sync frame below. */}
-              {msg.length > 0 ? (
-                <Text style={[styles.msg, styles.gapTop]}>{msg}</Text>
-              ) : null}
-              {exportAskCard}
+            {msg.length > 0 ? (
+              <Text style={[styles.msg, styles.gapTop]}>{msg}</Text>
+            ) : null}
+            {exportAskCard}
 
-              <ActivityBanner scale={scale} />
+            <ActivityBanner scale={scale} />
 
-              {(() => {
-                // v0.45 frame (user design 2026-07-18): PAGES are the primary
-                // unit (you pay per page), the note count is context. LEFT
-                // column = what runs itself (Auto; the Off block was removed
-                // in v0.60 — user decision: Off is a privacy switch, not a
-                // sync state). RIGHT column = Manual, where the user acts,
-                // top to bottom in flow order: check (free) → sync (paid,
-                // live or batch) → collect (free). Pages already in a pending
-                // batch job are shown AT MISTRAL, not "to sync" — the old
-                // frame kept counting them as unread after a submit (the
-                // "496 to read that never moves" confusion).
-                const {agg, toSync, canSync, foldersCnt} = syncFrame;
-                const man = agg.manual;
-                const last = getLastSyncAt();
-                const lastManual = getLastManualSyncAt();
-                // "3 folders · 45 notes (1200 pages) · 4 pdf (92 pages)"
-                // (user 2026-08-14): page counts live WITH each file type,
-                // not as a lone "N tracked" total the user could not map back.
-                const filesLabel = (
-                  a: (typeof agg)['auto'],
-                  mode: 'auto' | 'manual' | 'off',
-                ): string => {
-                  const f = foldersCnt[mode];
-                  return [
-                    f > 0 ? `${f} folder${f > 1 ? 's' : ''}` : null,
-                    `${a.noteFiles} notes (${a.notePages} pages)`,
-                    a.pdfFiles > 0 ? `${a.pdfFiles} pdf (${a.pdfPages} pages)` : null,
-                  ]
-                    .filter(x => x !== null)
-                    .join(' · ');
-                };
-                const centsFull = FULL_PAGE_READ_CENTS;
-                // Regression audit 2026-08-12: Lot 2 enabled "Sync now" when
-                // only Vision is owed (visionPending), but the label/euro still
-                // read from toSync alone → an active button over "0 pages · ~0
-                // €" that then billed a Vision pass. Reflect BOTH: queued pages
-                // cost the full read, vision-pending pages the cheaper Vision
-                // leg (OCR already paid, READ_COST_CENTS).
-                const visionPending = agg.manual.visionPending;
-                const syncPages = toSync + visionPending;
-                // Harmonised with Auto's "pages to read" (user 2026-08-14: the
-                // two columns used different verbs, "to read" vs "to sync").
-                const syncPendLabel =
-                  toSync > 0 && visionPending > 0
-                    ? `${toSync} to read + ${visionPending} to finish`
-                    : visionPending > 0
-                    ? `${visionPending} page(s) to finish (vision)`
-                    : `${toSync} pages to read`;
-                const syncEuro = (
-                  Math.round(
-                    toSync * centsFull + visionPending * READ_COST_CENTS,
-                  ) / 100
-                ).toFixed(2);
-                return (
-                  <View style={styles.autoBanner}>
-                    <View style={styles.syncTitleRow}>
-                      <Text style={styles.autoLbl}>SYNCHRONISATION</Text>
-                    </View>
+            {(() => {
+              // v0.45 frame (user design 2026-07-18): PAGES are the primary
+              // unit (you pay per page), the note count is context. LEFT
+              // column = what runs itself (Auto; the Off block was removed
+              // in v0.60 — user decision: Off is a privacy switch, not a
+              // sync state). RIGHT column = Manual, where the user acts,
+              // top to bottom in flow order: check (free) → sync (paid,
+              // live or batch) → collect (free). Pages already in a pending
+              // batch job are shown AT MISTRAL, not "to sync" — the old
+              // frame kept counting them as unread after a submit (the
+              // "496 to read that never moves" confusion).
+              const {agg, toSync, canSync, foldersCnt} = syncFrame;
+              const man = agg.manual;
+              const last = getLastSyncAt();
+              const lastManual = getLastManualSyncAt();
+              // "3 folders · 45 notes (1200 pages) · 4 pdf (92 pages)"
+              // (user 2026-08-14): page counts live WITH each file type,
+              // not as a lone "N tracked" total the user could not map back.
+              const filesLabel = (
+                a: (typeof agg)['auto'],
+                mode: 'auto' | 'manual' | 'off',
+              ): string => {
+                const f = foldersCnt[mode];
+                return [
+                  f > 0 ? `${f} folder${f > 1 ? 's' : ''}` : null,
+                  `${a.noteFiles} notes (${a.notePages} pages)`,
+                  a.pdfFiles > 0
+                    ? `${a.pdfFiles} pdf (${a.pdfPages} pages)`
+                    : null,
+                ]
+                  .filter(x => x !== null)
+                  .join(' · ');
+              };
+              const centsFull = FULL_PAGE_READ_CENTS;
+              // Regression audit 2026-08-12: Lot 2 enabled "Sync now" when
+              // only Vision is owed (visionPending), but the label/euro still
+              // read from toSync alone → an active button over "0 pages · ~0
+              // €" that then billed a Vision pass. Reflect BOTH: queued pages
+              // cost the full read, vision-pending pages the cheaper Vision
+              // leg (OCR already paid, READ_COST_CENTS).
+              const visionPending = agg.manual.visionPending;
+              const syncPages = toSync + visionPending;
+              // Harmonised with Auto's "pages to read" (user 2026-08-14: the
+              // two columns used different verbs, "to read" vs "to sync").
+              const syncPendLabel =
+                toSync > 0 && visionPending > 0
+                  ? `${toSync} to read + ${visionPending} to finish`
+                  : visionPending > 0
+                  ? `${visionPending} page(s) to finish (vision)`
+                  : `${toSync} pages to read`;
+              const syncEuro = (
+                Math.round(
+                  toSync * centsFull + visionPending * READ_COST_CENTS,
+                ) / 100
+              ).toFixed(2);
+              return (
+                <View style={styles.autoBanner}>
+                  <View style={styles.syncTitleRow}>
+                    <Text style={styles.autoLbl}>SYNCHRONISATION</Text>
+                  </View>
 
-                    {/* ---- AUTO | MANUAL side by side (user 2026-07-25) ---- */}
-                    <View style={styles.syncCols}>
-                      {syncCol({
-                        title: 'AUTO',
-                        action:
-                          agg.auto.notes > 0 ? (
-                            <TouchableOpacity
-                              onPress={forceSyncAuto}
-                              disabled={syncBusy}
-                              style={styles.clearMini}>
-                              <Text style={styles.clearMiniText}>
-                                {syncKind === 'auto' ? 'Syncing…' : 'Force sync'}
-                              </Text>
-                            </TouchableOpacity>
-                          ) : null,
-                        lastAt: last,
-                        filesLine:
-                          agg.auto.notes === 0
-                            ? 'nothing on Auto'
-                            : filesLabel(agg.auto, 'auto'),
-                        count:
-                          agg.auto.notes > 0
-                            ? {
-                                pending: agg.auto.toRead,
-                                pendLabel: `${agg.auto.toRead} pages to read`,
-                              }
-                            : null,
-                      })}
-
-                      <View style={styles.syncColDiv} />
-
-                      {syncCol({
-                        title: 'MANUAL',
-                        action: (
+                  {/* ---- AUTO | MANUAL side by side (user 2026-07-25) ---- */}
+                  <View style={styles.syncCols}>
+                    {syncCol({
+                      title: 'AUTO',
+                      action:
+                        agg.auto.notes > 0 ? (
                           <TouchableOpacity
-                            onPress={checkAllChanges}
-                            disabled={checkingAll}
+                            onPress={forceSyncAuto}
+                            disabled={syncBusy}
                             style={styles.clearMini}>
                             <Text style={styles.clearMiniText}>
-                              {checkingAll
-                                ? checkStatus || 'Checking…'
-                                : 'Check changes'}
+                              {syncKind === 'auto' ? 'Syncing…' : 'Force sync'}
                             </Text>
                           </TouchableOpacity>
-                        ),
-                        lastAt: lastManual,
-                        filesLine:
-                          man.notes === 0
-                            ? 'nothing on Manual'
-                            : filesLabel(man, 'manual'),
-                        count:
-                          man.notes > 0
-                            ? {
-                                pending: syncPages,
-                                pendLabel: syncPendLabel,
-                              }
-                            : null,
-                        footer:
-                          man.notes > 0 ? (
+                        ) : null,
+                      lastAt: last,
+                      filesLine:
+                        agg.auto.notes === 0
+                          ? 'nothing on Auto'
+                          : filesLabel(agg.auto, 'auto'),
+                      count:
+                        agg.auto.notes > 0
+                          ? {
+                              pending: agg.auto.toRead,
+                              pendLabel: `${agg.auto.toRead} pages to read`,
+                            }
+                          : null,
+                      // Lot C (c) 2026-08-16: the "last auto-synced docs"
+                      // list (user request 2026-07-19) — its display died
+                      // collaterally ONE DAY later in the v0.69 frame
+                      // rewrite; the recorder never stopped writing.
+                      // Up to 3 of the 5 persisted entries.
+                      footer:
+                        getRecentAutoSyncs().length > 0 ? (
+                          <View>
+                            {getRecentAutoSyncs()
+                              .slice(0, 3)
+                              .map(r => (
+                                <Text
+                                  key={`${r.name}#${r.at}`}
+                                  style={[styles.modelNote, nf]}
+                                  numberOfLines={1}>
+                                  {`✓ ${r.name} · ${fmtDateTime(r.at)} · ${
+                                    r.pages
+                                  } p.`}
+                                </Text>
+                              ))}
+                          </View>
+                        ) : null,
+                    })}
+
+                    <View style={styles.syncColDiv} />
+
+                    {syncCol({
+                      title: 'MANUAL',
+                      action: (
+                        <TouchableOpacity
+                          onPress={checkAllChanges}
+                          disabled={checkingAll}
+                          style={styles.clearMini}>
+                          <Text style={styles.clearMiniText}>
+                            {checkingAll
+                              ? checkStatus || 'Checking…'
+                              : 'Check changes'}
+                          </Text>
+                        </TouchableOpacity>
+                      ),
+                      lastAt: lastManual,
+                      filesLine:
+                        man.notes === 0
+                          ? 'nothing on Manual'
+                          : filesLabel(man, 'manual'),
+                      count:
+                        man.notes > 0
+                          ? {
+                              pending: syncPages,
+                              pendLabel: syncPendLabel,
+                            }
+                          : null,
+                      footer:
+                        man.notes > 0 ? (
+                          <View>
+                            {lastCheckAt > 0 ? (
+                              // Lot C (c): "last check" died welded to a
+                              // batch-only sentence on 2026-07-22; the
+                              // stamp itself never stopped writing.
+                              <Text style={[styles.modelNote, nf]}>
+                                {`last check ${fmtDateTime(lastCheckAt)}`}
+                              </Text>
+                            ) : null}
                             <TouchableOpacity
                               onPress={syncAutoNow}
                               disabled={syncBusy || !canSync}
@@ -2940,257 +3058,339 @@ function LibraryScreen({
                                     }`}
                               </Text>
                             </TouchableOpacity>
-                          ) : null,
-                      })}
-                    </View>
+                          </View>
+                        ) : null,
+                    })}
+                  </View>
 
-                    {/* The standing Sync-now order count line was removed
+                  {/* The standing Sync-now order count line was removed
                         (rationalisation 2026-08-14): the 4 queues (OCR + Vision,
                         per note / PDF) already ARE the pending truth — a second
                         counter was redundant and leaked stale orders. The orders
                         mechanism stays internal and now self-empties when a doc
                         owes nothing. */}
 
-                    {/* ---- SYNC STATUS — split by type (notes / PDF), v0.86 ----
+                  {/* ---- SYNC STATUS — split by type (notes / PDF), v0.86 ----
                         Notes and PDFs render under DIFFERENT hosts, so their
                         progress is two separate bars, each with its own details
                         toggle and a type-scoped "Vision now". */}
-                    {pipe !== null &&
-                    (pipe.notes.tracked > 0 || pipe.pdfs.tracked > 0) ? (
-                      <>
-                        <View style={styles.syncHr} />
-                        {/* One toggle for the whole SYNC STATUS block: the
+                  {pipe !== null &&
+                  (pipe.notes.tracked > 0 || pipe.pdfs.tracked > 0) ? (
+                    <>
+                      <View style={styles.syncHr} />
+                      {/* One toggle for the whole SYNC STATUS block: the
                             frame above already shows aggregate pending, so the
                             per-type bars + stage details are opt-in (status-line
                             rationalisation 2026-08-14). */}
-                        <TouchableOpacity
-                          activeOpacity={0.7}
-                          onPress={() => setPipeStatusOpen(v => !v)}
-                          style={styles.ssTop}>
-                          <Text style={styles.syncColTitle}>SYNC STATUS</Text>
-                          <Text
-                            style={[styles.modelNote, nf, styles.flex1, styles.lastAt]}>
-                            {`${pipe.notes.finished + pipe.pdfs.finished}p read / ${
-                              pipe.notes.tracked + pipe.pdfs.tracked
-                            }p tracked`}
-                          </Text>
-                          <Text style={styles.clearMiniText}>
-                            {pipeStatusOpen ? 'hide ▾' : 'details ▸'}
-                          </Text>
-                        </TouchableOpacity>
-                        {pipeStatusOpen ? (
-                        <>
-                        {/* v0.88: make the render host VISIBLE — "why is my
-                            other type not draining" was undiagnosable. */}
-                        <Text style={[styles.modelNote, nf]}>
-                          {getLastHostKind() === 'pdf'
-                            ? 'Rendering via: PDF reader (notes wait for a note)'
-                            : getLastHostKind() === 'note'
-                            ? 'Rendering via: note app (PDF Vision waits for a PDF)'
-                            : 'Rendering via: none yet (open a note or a PDF)'}
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => setPipeStatusOpen(v => !v)}
+                        style={styles.ssTop}>
+                        <Text style={styles.syncColTitle}>SYNC STATUS</Text>
+                        <Text
+                          style={[
+                            styles.modelNote,
+                            nf,
+                            styles.flex1,
+                            styles.lastAt,
+                          ]}>
+                          {`${
+                            pipe.notes.finished + pipe.pdfs.finished
+                          }p read / ${
+                            pipe.notes.tracked + pipe.pdfs.tracked
+                          }p tracked`}
                         </Text>
-                        {pendingPdf !== null && isPdfVisionBlocked() ? (
-                          <TouchableOpacity
-                            onPress={() => {
-                              const ov = (
-                                SmartNoteAiOverlay as {
-                                  openNoteAt?: (
-                                    p: string,
-                                    page: number,
-                                  ) => Promise<unknown>;
-                                }
-                              ).openNoteAt;
-                              Promise.resolve(ov?.(pendingPdf, 1)).catch(
-                                () => {},
-                              );
-                              setTimeout(
-                                () => pokeAuto('pdf-resume', {force: true}),
-                                1200,
-                              );
-                            }}
-                            style={[styles.clearMini, styles.gapTop]}>
-                            <Text style={styles.clearMiniText}>
-                              {`▶ Resume PDF Vision · opens ${
-                                pendingPdf.split('/').pop() ?? pendingPdf
-                              }`}
-                            </Text>
-                          </TouchableOpacity>
-                        ) : null}
-                        {[
-                          {
-                            key: 'notes' as const,
-                            title: 'NOTES',
-                            s: pipe.notes,
-                            open: pipeDetailsNotes,
-                            toggle: () => setPipeDetailsNotes(v => !v),
-                            vkind: 'note' as const,
-                          },
-                          {
-                            key: 'pdfs' as const,
-                            title: 'PDF',
-                            s: pipe.pdfs,
-                            open: pipeDetailsPdf,
-                            toggle: () => setPipeDetailsPdf(v => !v),
-                            vkind: 'pdf' as const,
-                          },
-                        ].map(bar => {
-                          if (bar.s.tracked === 0) {
-                            return null; // nothing tracked of this type
-                          }
-                          const onGoing = bar.s.tracked - bar.s.finished;
-                          // N5 (2026-08-12): never round UP to 100% while pages
-                          // are still on-going — Math.round(99.5)=100 showed a
-                          // full bar next to "100% · 1p on-going".
-                          const pct =
-                            bar.s.tracked > 0
-                              ? onGoing > 0
-                                ? Math.min(
-                                    99,
-                                    Math.round(
-                                      (bar.s.finished / bar.s.tracked) * 100,
-                                    ),
-                                  )
-                                : 100
-                              : 0;
-                          return (
-                            <View key={bar.key} style={styles.syncTypeBlock}>
-                              <TouchableOpacity
-                                activeOpacity={0.7}
-                                onPress={bar.toggle}
-                                style={styles.ssTop}>
-                                <Text style={styles.syncColTitle}>{bar.title}</Text>
-                                <Text
-                                  style={[styles.modelNote, nf, styles.flex1, styles.lastAt]}>
-                                  {`${bar.s.finished}p read / ${bar.s.tracked}p tracked · ${pct}% · ${onGoing}p on-going`}
-                                </Text>
-                                <Text style={styles.clearMiniText}>
-                                  {bar.open ? 'hide ▾' : 'details ▸'}
-                                </Text>
-                              </TouchableOpacity>
-                              <View style={styles.progTrack}>
-                                <View style={[styles.progFill, {width: `${pct}%`}]} />
-                              </View>
-                              {bar.open ? (
-                                <View style={styles.ssDetails}>
-                                  {[
-                                    {n: '1', nm: 'Queue', h: 'new / edited, not read yet', c: bar.s.queue, d: false},
-                                    {n: '2', nm: 'OCR done, Vision to do', h: 'on Supernote', c: bar.s.ocrDone, d: false},
-                                    {n: '✓', nm: 'Finished', h: '', c: bar.s.finished, d: true},
-                                  ].map(row => (
-                                    <View key={row.n} style={[styles.stRow, row.d && styles.stRowFin]}>
-                                      <Text style={styles.stMk}>{row.n}</Text>
-                                      <View style={styles.flex1}>
-                                        <View style={local.stInline}>
-                                          <Text style={[styles.modelNote, nf, row.d && styles.stOk]}>
-                                            {row.nm}
-                                          </Text>
-                                          {row.n === '2' && bar.s.ocrDone > 0 ? (
-                                            <TouchableOpacity
-                                              onPress={() => finishVisionNow(bar.vkind)}
-                                              disabled={finishingVision || syncBusy}
+                        <Text style={styles.clearMiniText}>
+                          {pipeStatusOpen ? 'hide ▾' : 'details ▸'}
+                        </Text>
+                      </TouchableOpacity>
+                      {pipeStatusOpen ? (
+                        <>
+                          {/* v0.88: make the render host VISIBLE — "why is my
+                            other type not draining" was undiagnosable. */}
+                          <Text style={[styles.modelNote, nf]}>
+                            {getLastHostKind() === 'pdf'
+                              ? 'Rendering via: PDF reader (notes wait for a note)'
+                              : getLastHostKind() === 'note'
+                              ? 'Rendering via: note app (PDF Vision waits for a PDF)'
+                              : 'Rendering via: none yet (open a note or a PDF)'}
+                          </Text>
+                          {pendingPdf !== null && isPdfVisionBlocked() ? (
+                            <TouchableOpacity
+                              onPress={() => {
+                                const ov = (
+                                  SmartNoteAiOverlay as {
+                                    openNoteAt?: (
+                                      p: string,
+                                      page: number,
+                                    ) => Promise<unknown>;
+                                  }
+                                ).openNoteAt;
+                                Promise.resolve(ov?.(pendingPdf, 1)).catch(
+                                  () => {},
+                                );
+                                setTimeout(
+                                  () => pokeAuto('pdf-resume', {force: true}),
+                                  1200,
+                                );
+                              }}
+                              style={[styles.clearMini, styles.gapTop]}>
+                              <Text style={styles.clearMiniText}>
+                                {`▶ Resume PDF Vision · opens ${
+                                  pendingPdf.split('/').pop() ?? pendingPdf
+                                }`}
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+                          {[
+                            {
+                              key: 'notes' as const,
+                              title: 'NOTES',
+                              s: pipe.notes,
+                              open: pipeDetailsNotes,
+                              toggle: () => setPipeDetailsNotes(v => !v),
+                              vkind: 'note' as const,
+                            },
+                            {
+                              key: 'pdfs' as const,
+                              title: 'PDF',
+                              s: pipe.pdfs,
+                              open: pipeDetailsPdf,
+                              toggle: () => setPipeDetailsPdf(v => !v),
+                              vkind: 'pdf' as const,
+                            },
+                          ].map(bar => {
+                            if (bar.s.tracked === 0) {
+                              return null; // nothing tracked of this type
+                            }
+                            const onGoing = bar.s.tracked - bar.s.finished;
+                            // N5 (2026-08-12): never round UP to 100% while pages
+                            // are still on-going — Math.round(99.5)=100 showed a
+                            // full bar next to "100% · 1p on-going".
+                            const pct =
+                              bar.s.tracked > 0
+                                ? onGoing > 0
+                                  ? Math.min(
+                                      99,
+                                      Math.round(
+                                        (bar.s.finished / bar.s.tracked) * 100,
+                                      ),
+                                    )
+                                  : 100
+                                : 0;
+                            return (
+                              <View key={bar.key} style={styles.syncTypeBlock}>
+                                <TouchableOpacity
+                                  activeOpacity={0.7}
+                                  onPress={bar.toggle}
+                                  style={styles.ssTop}>
+                                  <Text style={styles.syncColTitle}>
+                                    {bar.title}
+                                  </Text>
+                                  <Text
+                                    style={[
+                                      styles.modelNote,
+                                      nf,
+                                      styles.flex1,
+                                      styles.lastAt,
+                                    ]}>
+                                    {`${bar.s.finished}p read / ${bar.s.tracked}p tracked · ${pct}% · ${onGoing}p on-going`}
+                                  </Text>
+                                  <Text style={styles.clearMiniText}>
+                                    {bar.open ? 'hide ▾' : 'details ▸'}
+                                  </Text>
+                                </TouchableOpacity>
+                                <View style={styles.progTrack}>
+                                  <View
+                                    style={[
+                                      styles.progFill,
+                                      {width: `${pct}%`},
+                                    ]}
+                                  />
+                                </View>
+                                {bar.open ? (
+                                  <View style={styles.ssDetails}>
+                                    {[
+                                      {
+                                        n: '1',
+                                        nm: 'Queue',
+                                        h: 'new / edited, not read yet',
+                                        c: bar.s.queue,
+                                        d: false,
+                                      },
+                                      {
+                                        n: '2',
+                                        nm: 'OCR done, Vision to do',
+                                        h: 'on Supernote',
+                                        c: bar.s.ocrDone,
+                                        d: false,
+                                      },
+                                      {
+                                        n: '✓',
+                                        nm: 'Finished',
+                                        h: '',
+                                        c: bar.s.finished,
+                                        d: true,
+                                      },
+                                    ].map(row => (
+                                      <View
+                                        key={row.n}
+                                        style={[
+                                          styles.stRow,
+                                          row.d && styles.stRowFin,
+                                        ]}>
+                                        <Text style={styles.stMk}>{row.n}</Text>
+                                        <View style={styles.flex1}>
+                                          <View style={local.stInline}>
+                                            <Text
                                               style={[
-                                                styles.clearMini,
-                                                (finishingVision || syncBusy) && styles.smallBtnOff,
+                                                styles.modelNote,
+                                                nf,
+                                                row.d && styles.stOk,
                                               ]}>
-                                              <Text style={styles.clearMiniText}>
-                                                {finishingVision && finishVisionKind === bar.vkind
-                                                  ? 'Running vision…'
-                                                  : '▶ Force Vision'}
-                                              </Text>
-                                            </TouchableOpacity>
+                                              {row.nm}
+                                            </Text>
+                                            {row.n === '2' &&
+                                            bar.s.ocrDone > 0 ? (
+                                              <TouchableOpacity
+                                                onPress={() =>
+                                                  finishVisionNow(bar.vkind)
+                                                }
+                                                disabled={
+                                                  finishingVision || syncBusy
+                                                }
+                                                style={[
+                                                  styles.clearMini,
+                                                  (finishingVision ||
+                                                    syncBusy) &&
+                                                    styles.smallBtnOff,
+                                                ]}>
+                                                <Text
+                                                  style={styles.clearMiniText}>
+                                                  {finishingVision &&
+                                                  finishVisionKind === bar.vkind
+                                                    ? 'Running vision…'
+                                                    : '▶ Force Vision'}
+                                                </Text>
+                                              </TouchableOpacity>
+                                            ) : null}
+                                          </View>
+                                          {row.h.length > 0 ? (
+                                            <Text
+                                              style={[
+                                                styles.modelNote,
+                                                nf,
+                                                styles.stHint,
+                                              ]}>
+                                              {row.h}
+                                            </Text>
                                           ) : null}
                                         </View>
-                                        {row.h.length > 0 ? (
-                                          <Text style={[styles.modelNote, nf, styles.stHint]}>
-                                            {row.h}
-                                          </Text>
-                                        ) : null}
+                                        <Text
+                                          style={[
+                                            styles.stNum,
+                                            row.d && styles.stOk,
+                                          ]}>
+                                          {`${row.c} p`}
+                                        </Text>
                                       </View>
-                                      <Text style={[styles.stNum, row.d && styles.stOk]}>
-                                        {`${row.c} p`}
-                                      </Text>
-                                    </View>
-                                  ))}
-                                </View>
-                              ) : null}
-                            </View>
-                          );
-                        })}
-                        <Text
-                          style={[styles.modelNote, nf, styles.stHint, styles.gapTop]}>
-                          Note sync needs a note open in the background; PDF
-                          Vision (schemas &amp; handwritten annotations) needs a
-                          PDF open in the background.
-                        </Text>
+                                    ))}
+                                  </View>
+                                ) : null}
+                              </View>
+                            );
+                          })}
+                          <Text
+                            style={[
+                              styles.modelNote,
+                              nf,
+                              styles.stHint,
+                              styles.gapTop,
+                            ]}>
+                            Note sync needs a note open in the background; PDF
+                            Vision (schemas &amp; handwritten annotations) needs
+                            a PDF open in the background.
+                          </Text>
                         </>
-                        ) : null}
-                      </>
-                    ) : null}
-
-                  </View>
+                      ) : null}
+                    </>
+                  ) : null}
+                </View>
+              );
+            })()}
+            <View style={[styles.libSectionRow, {flexWrap: 'wrap'}]}>
+              <Text style={[styles.modelNote, nf]}>Show:</Text>
+              {(['auto', 'manual', 'off'] as const).map(m => {
+                const on = modeShow.has(m);
+                return (
+                  <TouchableOpacity
+                    key={`sh:${m}`}
+                    onPress={() =>
+                      setModeShow(cur => {
+                        const n = new Set(cur);
+                        if (n.has(m)) {
+                          n.delete(m);
+                        } else {
+                          n.add(m);
+                        }
+                        return n;
+                      })
+                    }
+                    style={[
+                      styles.clearMini,
+                      on && {backgroundColor: '#000000'},
+                    ]}>
+                    <Text
+                      style={[styles.clearMiniText, on && {color: '#ffffff'}]}>
+                      {m === 'auto'
+                        ? 'Auto'
+                        : m === 'manual'
+                        ? 'Manual'
+                        : 'Off'}
+                    </Text>
+                  </TouchableOpacity>
                 );
-              })()}
-              <View style={[styles.libSectionRow, {flexWrap: 'wrap'}]}>
-                <Text style={[styles.modelNote, nf]}>Show:</Text>
-                {(['auto', 'manual', 'off'] as const).map(m => {
-                  const on = modeShow.has(m);
-                  return (
-                    <TouchableOpacity
-                      key={`sh:${m}`}
-                      onPress={() =>
-                        setModeShow(cur => {
-                          const n = new Set(cur);
-                          if (n.has(m)) {
-                            n.delete(m);
-                          } else {
-                            n.add(m);
-                          }
-                          return n;
-                        })
-                      }
-                      style={[styles.clearMini, on && {backgroundColor: '#000000'}]}>
-                      <Text
-                        style={[styles.clearMiniText, on && {color: '#ffffff'}]}>
-                        {m === 'auto' ? 'Auto' : m === 'manual' ? 'Manual' : 'Off'}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-                {agentsView.length > 0 ? (
-                  <Text style={[styles.modelNote, nf]}> · In agent:</Text>
-                ) : null}
-                {agentsView.map(a => {
-                  const on = agentShow === a.id;
-                  return (
-                    <TouchableOpacity
-                      key={`ag:${a.id}`}
-                      onPress={() => setAgentShow(cur => (cur === a.id ? null : a.id))}
-                      style={[styles.clearMini, on && {backgroundColor: '#000000'}]}>
-                      <Text
-                        style={[styles.clearMiniText, on && {color: '#ffffff'}]}
-                        numberOfLines={1}>
-                        {a.icon} {a.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-              {treeRows}
-              <Text style={[styles.modelNote, nf, styles.gapTop]}>
-                One chip per row sets the mode: Off (never sent to the AI),
-                Manual (read on demand: Sync now; a chat question reads the text only), or
-                Auto (read in the background while the plugin is open). A folder
-                covers every note and PDF under it; a note or PDF can be set on
-                its own. There is a single engine: Mistral OCR, then a Vision
-                pass on every page. Setting a chip costs
-                nothing; you only pay when pages are actually read.
-              </Text>
-            </>
-          )}
-          <View style={styles.bottomPad} />
-        </ScrollView>
-      </View>
-    );
+              })}
+              {agentsView.length > 0 ? (
+                <Text style={[styles.modelNote, nf]}> · In agent:</Text>
+              ) : null}
+              {agentsView.map(a => {
+                const on = agentShow === a.id;
+                return (
+                  <TouchableOpacity
+                    key={`ag:${a.id}`}
+                    onPress={() =>
+                      setAgentShow(cur => (cur === a.id ? null : a.id))
+                    }
+                    style={[
+                      styles.clearMini,
+                      on && {backgroundColor: '#000000'},
+                    ]}>
+                    <Text
+                      style={[styles.clearMiniText, on && {color: '#ffffff'}]}
+                      numberOfLines={1}>
+                      {a.icon} {a.name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {treeRows}
+            <Text style={[styles.modelNote, nf, styles.gapTop]}>
+              One chip per row sets the mode: Off (never sent to the AI), Manual
+              (read on demand: Sync now; a chat question reads the text only),
+              or Auto (read in the background while the plugin is open). A
+              folder covers every note and PDF under it; a note or PDF can be
+              set on its own. There is a single engine: Mistral OCR, then a
+              Vision pass on every page. Setting a chip costs nothing; you only
+              pay when pages are actually read.
+            </Text>
+          </>
+        )}
+        <View style={styles.bottomPad} />
+      </ScrollView>
+    </View>
+  );
 }
 
 const local = StyleSheet.create({
@@ -3245,7 +3445,12 @@ const local = StyleSheet.create({
     padding: 11,
     marginBottom: 4,
   },
-  autoLbl: {fontSize: 12, fontWeight: '800', letterSpacing: 0.5, color: '#000000'},
+  autoLbl: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    color: '#000000',
+  },
   syncTitleRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
   // v0.79.13: AUTO & MANUAL as two side-by-side columns (user 2026-07-25).
   syncCols: {flexDirection: 'row', gap: 12, marginTop: 8},
@@ -3258,17 +3463,43 @@ const local = StyleSheet.create({
   syncColTitle: {fontSize: 13, fontWeight: '700', color: '#000000'},
   // (v0.80.0 audit: syncRow/syncStatRow/autoBtnsRow/syncBtnText/syncHrTop —
   // leftovers of the pre-column layouts — were dropped as dead styles.)
-  syncHr: {borderTopWidth: 1, borderTopColor: '#bbbbbb', marginTop: 12, paddingTop: 4},
+  syncHr: {
+    borderTopWidth: 1,
+    borderTopColor: '#bbbbbb',
+    marginTop: 12,
+    paddingTop: 4,
+  },
   // v0.86: one SYNC STATUS bar per document type (notes / PDF).
   syncTypeBlock: {marginTop: 10},
   lastAt: {marginLeft: 8},
   ssTop: {flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2},
-  progTrack: {height: 10, backgroundColor: '#d8d8d8', borderRadius: 20, overflow: 'hidden', marginTop: 8},
+  progTrack: {
+    height: 10,
+    backgroundColor: '#d8d8d8',
+    borderRadius: 20,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
   progFill: {height: '100%', backgroundColor: '#000000', borderRadius: 20},
   ssDetails: {marginTop: 10, gap: 1},
-  stRow: {flexDirection: 'row', alignItems: 'baseline', gap: 9, paddingVertical: 3},
-  stInline: {flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap'},
-  stRowFin: {borderTopWidth: 1, borderTopColor: '#dddddd', marginTop: 3, paddingTop: 7},
+  stRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 9,
+    paddingVertical: 3,
+  },
+  stInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  stRowFin: {
+    borderTopWidth: 1,
+    borderTopColor: '#dddddd',
+    marginTop: 3,
+    paddingTop: 7,
+  },
   stMk: {fontSize: 12, color: '#666666', width: 16},
   stNum: {fontSize: 14, fontWeight: '700', color: '#000000'},
   stHint: {color: '#666666'},
@@ -3316,7 +3547,12 @@ const local = StyleSheet.create({
   aChipOnText: {color: '#ffffff'},
   aChipInh: {borderStyle: 'dotted'},
   aChipInhText: {fontSize: 11, fontWeight: '600', color: '#666666'},
-  libStatus: {fontSize: 11, fontWeight: '700', minWidth: 52, textAlign: 'right'},
+  libStatus: {
+    fontSize: 11,
+    fontWeight: '700',
+    minWidth: 52,
+    textAlign: 'right',
+  },
   stOk: {color: '#000000'},
   // v0.80.0 (audit L4): pending is BOLDER than done — weight is the e-ink
   // signal (the two used to be pixel-identical).
