@@ -122,6 +122,9 @@ const fvMock = finishVisionLive as jest.MockedFunction<typeof finishVisionLive>;
 const pendingVisionMock = (
   jest.requireMock('./reading') as {pendingVisionPages: jest.Mock}
 ).pendingVisionPages;
+const listDirMock = (
+  jest.requireMock('./fs') as {listDirNative: jest.Mock}
+).listDirNative;
 
 const NOTE = '/Note/tracked.note';
 const REVS = new Map([
@@ -173,6 +176,7 @@ beforeEach(() => {
     migrated: false,
   });
   needMock.mockResolvedValue([]);
+  listDirMock.mockResolvedValue([]); // default: no folder walk (explicit targets)
   readMock.mockResolvedValue({ok: true, read: 0, failed: []});
   readPdfMock.mockResolvedValue({ok: true, read: 0, failed: []});
   syncMock.mockResolvedValue(undefined);
@@ -793,6 +797,129 @@ describe('manual docs: paid ONLY on an explicit Sync now (no standing order)', (
     // Re-tapping Sync now reads the remainder.
     await autoTranscriptTick(deps(), {trigger: 'sync', modeFilter: 'manual', force: true});
     expect(readMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// A note DELETED on the device but still holding a stale store entry counts as
+// "1 to read" the tick can never read (file gone). We purge the ghost — but only
+// after the file is confirmed unreadable for 3 CONSECUTIVE ticks (the firmware's
+// transient "all-notes 0 pages" glitch must never cause a false purge / re-bill).
+describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
+  const GHOST = '/Note/Perso/Ghost.note';
+  // The folder ANSWERS with a surviving sibling but not the ghost — proof the
+  // volume is live and the ghost's absence is a real deletion, not an outage.
+  const KEEPER = [{name: 'Keeper.note', isDir: false, size: 100}];
+
+  it('purges a tracked note whose file is gone — after 3 confirmations, not before', async () => {
+    upsertPage(storeState.store, GHOST, 0, {text: 'old', source: 'medium', at: 1, hash: ''}, 1);
+    settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
+    needMock.mockResolvedValue([]);
+    // A deleted file cannot be read: both the footer read AND readFileSize fail.
+    // (An inconsistent mock — footer OK but size null — would be a live file and
+    // must NOT prune; the presence resets below rely on exactly that signal.)
+    revsMock.mockResolvedValue(new Map());
+    fileSizeMock.mockResolvedValue(null);
+    listDirMock.mockResolvedValue(KEEPER); // folder live, ghost absent → real deletion
+    const gone = deps({getNoteTotalPageNum: async () => 0}); // walks to 0 pages
+    await autoTranscriptTick(gone, {force: true, trigger: 'sync'});
+    expect(storeState.store.docs[GHOST]).toBeDefined(); // 1/3
+    nowMs += 60_000;
+    await autoTranscriptTick(gone, {force: true, trigger: 'sync'});
+    expect(storeState.store.docs[GHOST]).toBeDefined(); // 2/3
+    nowMs += 60_000;
+    await autoTranscriptTick(gone, {force: true, trigger: 'sync'});
+    expect(storeState.store.docs[GHOST]).toBeUndefined(); // 3/3 → pruned
+  });
+
+  it('does NOT purge when the file blips back (transient glitch): the streak resets', async () => {
+    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
+    needMock.mockResolvedValue([]);
+    revsMock.mockResolvedValue(new Map());
+    fileSizeMock.mockResolvedValue(null);
+    listDirMock.mockResolvedValue(KEEPER);
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'}); // 1/3
+    // File comes back (readable, real page count) → streak resets.
+    nowMs += 60_000;
+    fileSizeMock.mockResolvedValue(1000);
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 1}), {force: true, trigger: 'sync'});
+    // Unreadable again for TWO more ticks — only 2/3 after the reset, so kept.
+    nowMs += 60_000;
+    fileSizeMock.mockResolvedValue(null);
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    nowMs += 60_000;
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    expect(storeState.store.docs[GHOST]).toBeDefined(); // reset worked → not pruned
+  });
+
+  it('NON-consecutive glitches do NOT prune: a healthy stamp-skip tick between them resets (audit 2026-08-15)', async () => {
+    // The audit's false-positive path: a real, fully-covered note early-SKIPS on
+    // healthy ticks (footer read OK, stamp unchanged) so it never reaches the
+    // prune block. If those skips did not reset the streak, three unrelated
+    // glitches spread over a session would delete the real transcript. They must
+    // reset it via presence-proof #2 (sig non-empty), keeping the streak truly
+    // consecutive.
+    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    setStamp(storeState.store, GHOST, SIG); // last pass sealed it clean
+    setDocHash(storeState.store, GHOST, 'h999'); // storeKnown, not storePending
+    settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
+    needMock.mockResolvedValue([]);
+    listDirMock.mockResolvedValue(KEEPER); // folder live throughout
+
+    const glitch = async () => {
+      revsMock.mockResolvedValue(new Map()); // footer read fails
+      fileSizeMock.mockResolvedValue(null); // file unreadable
+      nowMs += 60_000;
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    };
+    const healthyStampSkip = async () => {
+      revsMock.mockResolvedValue(REVS); // footer read OK → sig === stamp → stamp-skip
+      fileSizeMock.mockResolvedValue(1000);
+      nowMs += 60_000;
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 3}), {force: false, trigger: 'background'});
+    };
+
+    await glitch(); // streak 1
+    await healthyStampSkip(); // early stamp-skip → reset to 0
+    await glitch(); // streak 1
+    await healthyStampSkip(); // reset to 0
+    await glitch(); // streak 1 — three glitches total, but non-consecutive
+    expect(storeState.store.docs[GHOST]).toBeDefined(); // never reached 3 → kept
+  });
+
+  it('NEVER prunes during a storage outage: an empty/unreadable folder holds the streak (audit 2026-08-15)', async () => {
+    // A volume unmount / MTP lock / FS stall fails the walk, the footer read AND
+    // readFileSize all at once on a PRESENT file. Without the folder-liveness
+    // guard those three failures would look identical to a deletion and prune +
+    // re-bill an intact transcript. The empty listing must HOLD forever.
+    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
+    needMock.mockResolvedValue([]);
+    revsMock.mockResolvedValue(new Map()); // footer unreadable (volume down)
+    fileSizeMock.mockResolvedValue(null); // size unreadable
+    listDirMock.mockResolvedValue([]); // folder itself gives nothing → no proof
+    for (let i = 0; i < 5; i++) {
+      nowMs += 60_000;
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    }
+    expect(storeState.store.docs[GHOST]).toBeDefined(); // 5 ticks, still kept
+  });
+
+  it('NEVER prunes a note the folder still lists (present but locked/unreadable this tick)', async () => {
+    // readFileSize can return null for a file that is merely locked or mid-write
+    // while still present. If the folder lists it, it is not a ghost.
+    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
+    needMock.mockResolvedValue([]);
+    revsMock.mockResolvedValue(new Map());
+    fileSizeMock.mockResolvedValue(null);
+    // The folder answers AND lists the ghost itself → present, just unreadable.
+    listDirMock.mockResolvedValue([{name: 'Ghost.note', isDir: false, size: 100}]);
+    for (let i = 0; i < 5; i++) {
+      nowMs += 60_000;
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    }
+    expect(storeState.store.docs[GHOST]).toBeDefined(); // listed → never pruned
   });
 });
 

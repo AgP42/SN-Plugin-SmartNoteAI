@@ -32,6 +32,7 @@ import {
   getOwed,
   pageStage,
   docPageCount,
+  removeDoc,
 } from '../core/store/transcriptStore';
 import {
   pagesNeedingRead,
@@ -208,6 +209,29 @@ const visionFails = new Map<string, number>();
 const MAX_PDF_FAILS = 3;
 const pdfFails = new Map<string, number>();
 export const getPdfFails = (): ReadonlyMap<string, number> => pdfFails;
+// Ghost-transcript pruning (2026-08-15): a note DELETED on the device but still
+// holding a stale store entry keeps counting "1 to read" the tick can never
+// read (the file is gone). We purge it — but ONLY after the file is confirmed
+// unreadable for CONSEC_GHOST_TICKS consecutive ticks, never on one miss: the
+// firmware has a known transient "all-notes 0 pages" glitch, and a false purge
+// would drop a real transcript and re-bill the re-read.
+//
+// "Consecutive" is enforced by TWO presence resets earlier in the tick, not by
+// this block alone (audit 2026-08-15): a healthy note can `continue` at the
+// byte-size or footer-stamp skip long before reaching the prune logic, so the
+// streak MUST be cleared the moment presence is proven — reset #1 when the walk
+// saw the file (walkSizes), reset #2 when the footer read succeeded (sig). With
+// both, the streak advances only on ticks where the walk AND the footer AND the
+// page count AND readFileSize all fail together — a genuinely absent file.
+//
+// Even then, the prune block re-lists the file's own FOLDER before advancing:
+// it only counts a tick as "gone" when the folder answers with OTHER files but
+// not this one. A folder that still lists the file (present but locked) or an
+// empty/unreadable listing (the volume itself is unmounted/stalled) HOLDS the
+// streak and never prunes — so a storage outage can never delete a live
+// transcript (audit 2026-08-15). Per-document, session-scoped.
+const CONSEC_GHOST_TICKS = 3;
+const ghostStreak = new Map<string, number>();
 // v0.88.3 perf: a failed render PROBE is not retried for a minute (except on
 // explicit/force pokes) — the v0.87.4 "ping" attempted 3 doomed renders on
 // EVERY 20 s tick, a steady tax on the e-ink UI thread.
@@ -718,6 +742,17 @@ export const autoTranscriptTick = async (
       // lost to remap/evict/Clear after a stamp — v0.52 phantom-backlog fix).
       const forceProcess =
         opts?.deepRecheck === true || isCurrent || storePending.has(notePath);
+      // Ghost-streak reset #1 (audit 2026-08-15): the folder walk SAW this file
+      // on disk this tick (it has a size) → it is present, categorically not a
+      // deleted ghost. Clear the streak HERE, before the byte-size skip below
+      // can `continue` past the ghost logic at the bottom of the loop. Without
+      // this a fully-covered note byte-skips every healthy tick and never
+      // resets, so unrelated transient glitches accumulate to a FALSE prune
+      // (removeDoc) of a real, paid transcript — the money bug the streak was
+      // meant to prevent. Presence, not consecutiveness, is the real guarantee.
+      if (isNotePath(notePath) && walkSizes.has(notePath)) {
+        ghostStreak.delete(notePath);
+      }
       // v0.88.3 perf (append-only format): same byte size as when this note
       // was last seen clean, and the store knows it → nothing to do, zero IO.
       // Any flushed edit grows the file and reopens the gate. `trigger==='sync'`
@@ -870,6 +905,17 @@ export const autoTranscriptTick = async (
       // prefix bump invalidates ALL of them once, so the first tick
       // re-checks every note (free walk) and reads what is truly missing.
       const sig = revs.size > 0 ? 'v2:' + footerSignature(revs) : '';
+      // Ghost-streak reset #2 (audit 2026-08-15): the footer read SUCCEEDED
+      // (non-empty sig) → the file is present and parseable, so it is not a
+      // ghost even if getNoteTotalPageNum/readFileSize glitch later this tick.
+      // This covers the notes reset #1 misses: explicit per-file targets (never
+      // in walkSizes) that stamp-skip below, and any present note that reaches
+      // the footer without a walk size. Together the two resets make the streak
+      // advance ONLY on ticks where BOTH the walk and the footer fail — i.e. a
+      // genuinely absent file — so it is again truly "consecutive absent ticks".
+      if (sig.length > 0) {
+        ghostStreak.delete(notePath);
+      }
       // The note you are actively writing in is ALWAYS processed (we just
       // flushed it above). The footer-signature skip is only an optimisation
       // for the OTHER tracked notes, which can't have changed since we last
@@ -975,9 +1021,71 @@ export const autoTranscriptTick = async (
 
       const total = await notePageCount(deps, notePath);
       if (total <= 0) {
-        console.log('[SmartNoteAI.auto]', `${name}: 0 pages → skip`);
+        // A tracked note that walks to 0 pages while the store STILL holds a
+        // transcript for it is either a genuinely deleted note (ghost) or a
+        // transient native glitch. Tell them apart by the FILE: readFileSize
+        // returns null when it cannot be opened at all. Only a ghost stays
+        // unreadable tick after tick — purge it after CONSEC_GHOST_TICKS so its
+        // stale "1 to read" stops haunting the count; a real note whose file
+        // blips back resets the streak and keeps its transcript (never re-billed).
+        const isTracked = store.docs[notePath] !== undefined;
+        const sz = isTracked
+          ? await readFileSize(notePath).catch(() => null)
+          : 0;
+        if (isTracked && (sz === null || sz <= 0)) {
+          // Storage-outage guard (audit 2026-08-15): readFileSize===null cannot
+          // by itself tell a DELETED file from one on a volume that is briefly
+          // unmounted / MTP-locked / stalled — during an outage the walk, the
+          // footer read AND readFileSize all fail on a PRESENT file, and pruning
+          // it would delete + re-bill an intact transcript. Confirm the file is
+          // REALLY gone by listing its OWN folder, the same "empty listing !=
+          // failed listing" proof resolveTrackedNotes uses for rename inference:
+          const dir = notePath.slice(0, notePath.lastIndexOf('/'));
+          const siblings = await listDirNative(dir).catch(() => []);
+          if (siblings.some(e => `${dir}/${e.name}` === notePath)) {
+            // The folder still lists this file → it exists, we just could not
+            // open it this tick (a lock / transient) → not a ghost.
+            ghostStreak.delete(notePath);
+            console.log(
+              '[SmartNoteAI.auto]',
+              `${name}: 0 pages but the folder still lists it (locked?) → hold, no prune`,
+            );
+            continue;
+          }
+          if (siblings.length === 0) {
+            // Empty / unreadable listing = no proof storage is even live →
+            // hold the streak (neither advance nor reset) and never prune.
+            // Fail-safe: a lingering ghost is cosmetic and Clear-able; a false
+            // prune costs money.
+            console.log(
+              '[SmartNoteAI.auto]',
+              `${name}: 0 pages, folder empty/unreadable (storage down?) → hold, no prune`,
+            );
+            continue;
+          }
+          // The folder ANSWERED with other files but not this one → truly gone.
+          const n = (ghostStreak.get(notePath) ?? 0) + 1;
+          if (n >= CONSEC_GHOST_TICKS) {
+            ghostStreak.delete(notePath);
+            console.log(
+              '[SmartNoteAI.auto]',
+              `${name}: file gone for ${CONSEC_GHOST_TICKS} ticks → pruning ghost transcript`,
+            );
+            await mutateStore(s => removeDoc(s, notePath));
+          } else {
+            ghostStreak.set(notePath, n);
+            console.log(
+              '[SmartNoteAI.auto]',
+              `${name}: 0 pages, file unreadable (${n}/${CONSEC_GHOST_TICKS}) → skip`,
+            );
+          }
+        } else {
+          ghostStreak.delete(notePath); // file present (empty note) — not a ghost
+          console.log('[SmartNoteAI.auto]', `${name}: 0 pages → skip`);
+        }
         continue;
       }
+      ghostStreak.delete(notePath); // walked fine → not a ghost
       const wanted = Array.from({length: total}, (_, i) => i);
       // Audit 2026-07-30: a THROW here must not read as "nothing needed" —
       // that stamped the note at the current footer sig with a masked edit
