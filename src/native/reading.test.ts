@@ -662,6 +662,9 @@ describe('readPdf', () => {
     );
     setDocHash(storeState.store, PDF, '5');
     const deps = baseDeps({
+      // Audit 2026-08-16: these annotated pages have NO entry (no anti-bleed
+      // baseline), so their repair only runs for the doc on screen.
+      getCurrentFilePath: async () => PDF,
       getMarkPages: jest.fn(async () => ({result: [0, 1], success: true})),
       generateMarkThumbnails: jest.fn(async () => ({success: true})),
       compositePng: jest.fn(async () => ({success: true})),
@@ -1611,7 +1614,8 @@ describe('cleared-page repair (pageCount truth) & anti-bleed gates', () => {
     coveredPdf(2);
     upsertPage(storeState.store, PDF, 0, entry('', {text: 'kept', source: 'medium'}), 1);
     route({chat: () => chatRes('repaired page text')});
-    const deps = baseDeps();
+    // The repair only runs for the doc ON SCREEN (anti-bleed, audit 2026-08-16).
+    const deps = baseDeps({getCurrentFilePath: async () => PDF});
     const out = await finishVisionLive(deps, 'key', 'SYS', {kind: 'pdf'});
     expect(out.read).toBe(1);
     const e = getPage(storeState.store, PDF, 1)!;
@@ -1621,10 +1625,30 @@ describe('cleared-page repair (pageCount truth) & anti-bleed gates', () => {
     expect(pendingVisionPages(storeState.store, PDF)).toEqual([]); // debt settled
   });
 
+  it('a cleared page is NOT repaired while ANOTHER doc is on screen — deferred, free (anti-bleed)', async () => {
+    coveredPdf(2);
+    upsertPage(storeState.store, PDF, 0, entry('', {text: 'kept', source: 'medium'}), 1);
+    route({chat: () => chatRes('should never be called')});
+    const deps = baseDeps(); // getCurrentFilePath → NOTE ≠ PDF
+    const out = await finishVisionLive(deps, 'key', 'SYS', {kind: 'pdf'});
+    expect(out.read).toBe(0);
+    expect(out.pending).toBe(1); // still owed, visible
+    expect(getPage(storeState.store, PDF, 1)).toBeNull(); // nothing stored
+    expect(deps.generateDocImage).not.toHaveBeenCalled(); // not even rendered
+    expect(
+      fetchMock.mock.calls.filter(c => String(c[0]).includes('/chat/')).length,
+    ).toBe(0); // zero paid calls
+  });
+
   it('a cleared page whose vision finds NOTHING gets its negative-cache stub back (no re-bill loop)', async () => {
     coveredPdf(1);
     route({chat: () => chatRes('')}); // vision ran, nothing there
-    const out = await finishVisionLive(baseDeps(), 'key', 'SYS', {kind: 'pdf'});
+    const out = await finishVisionLive(
+      baseDeps({getCurrentFilePath: async () => PDF}),
+      'key',
+      'SYS',
+      {kind: 'pdf'},
+    );
     expect(out.read).toBe(0);
     const e = getPage(storeState.store, PDF, 0)!;
     expect(e).not.toBeNull();
@@ -1643,6 +1667,15 @@ describe('cleared-page repair (pageCount truth) & anti-bleed gates', () => {
     const e = getPage(storeState.store, PDF, 0)!;
     expect(e.source).toBe('mistral-ocr'); // NOT promoted
     expect(e.text).toBe(RICH_OCR); // NOT overwritten
+    // Audit #5/#9/#14: the rejection SETTLES the page durably (safe OCR text
+    // kept, no vision re-bill every session / every chat resume) — the escape
+    // is the explicit Redo with the PDF open.
+    expect(e.va).toBe('d:123');
+    fetchMock.mockClear();
+    await finishVisionLive(baseDeps(), 'key', 'SYS', {kind: 'pdf'});
+    expect(
+      fetchMock.mock.calls.filter(c => String(c[0]).includes('/chat/')).length,
+    ).toBe(0); // second pass: no paid retry
   });
 
   it('bleed-tripwire: the same content-bearing render for two pages defers the second for FREE', async () => {

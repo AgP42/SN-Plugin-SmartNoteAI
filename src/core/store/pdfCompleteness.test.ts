@@ -111,3 +111,28 @@ describe('pageStage for a MISSING entry', () => {
     ).toBe('queue');
   });
 });
+
+describe('audit 2026-08-16 fixes', () => {
+  it('the pageCount truth TRAVELS with a move/copy adoption (copyPdfDoc)', () => {
+    const s = emptyStore();
+    const donor = '/Old/doc.pdf';
+    upsertPage(s, donor, 0, entry('paid page text'), 1);
+    s.docs[donor]!.docHash = '5000';
+    s.docs[donor]!.pageCount = 20;
+    const adopted = (require('./transcriptStore') as typeof import('./transcriptStore'))
+      .adoptPdfDoc(s, '/New/doc.pdf', 5000, 2);
+    expect(adopted).toBe(true);
+    expect(s.docs['/New/doc.pdf']!.pageCount).toBe(20); // the truth moved too
+  });
+
+  it('pdfMissingPages spans past pageCount when an ENTRY proves more pages exist', () => {
+    const s = emptyStore();
+    upsertPage(s, PDF, 0, entry('a'), 1);
+    upsertPage(s, PDF, 11, entry('doorbell-stored page'), 1); // proves ≥12 pages
+    s.docs[PDF]!.docHash = '123';
+    s.docs[PDF]!.pageCount = 10; // truncated OCR response
+    // Gaps INSIDE the proven span are repairable debt — including 10 (beyond
+    // the stamped count but below the proven entry).
+    expect(pdfMissingPages(s, PDF)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+});

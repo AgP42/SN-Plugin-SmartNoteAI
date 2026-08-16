@@ -727,6 +727,10 @@ const copyPdfDoc = (
     pages,
     stars: [],
     kws: [],
+    // Audit 2026-08-16 (#3/#8/#12): the completeness truth must TRAVEL with
+    // the transcripts, or a moved covered PDF regresses to the covered-gate
+    // lie (its cleared-page debt silently reads 'finished' again).
+    ...(doc.pageCount !== undefined ? {pageCount: doc.pageCount} : {}),
   };
   markDocTouched(to);
   return true;
@@ -882,8 +886,19 @@ export const pdfMissingPages = (store: Store, path: string): number[] => {
   ) {
     return [];
   }
+  // Span = the same truth docPageCount serves: an ENTRY at index i proves the
+  // doc has ≥ i+1 pages even when the stamped pageCount is lower (a truncated
+  // OCR response, a doorbell-stored page past the range). Audit 2026-08-16
+  // (#11/#17): scanning only [0, pageCount) counted those gaps as debt in
+  // every display (pageStage is index-blind) while never repairing them — a
+  // permanently unclearable "N to sync".
+  const keys = Object.keys(doc.pages).map(Number);
+  const span = Math.max(
+    doc.pageCount,
+    keys.length > 0 ? Math.max(...keys) + 1 : 0,
+  );
   const out: number[] = [];
-  for (let p = 0; p < doc.pageCount; p++) {
+  for (let p = 0; p < span; p++) {
     if (doc.pages[String(p)] === undefined) {
       out.push(p);
     }
