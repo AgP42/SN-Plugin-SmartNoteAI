@@ -88,12 +88,12 @@ describe('useSmartSearch', () => {
     expect(h.current.truncated).toBe(true);
   });
 
-  it('explains an active zero-hit query (Off / never-synced folders are invisible)', async () => {
+  it('explains an active zero-hit query (names searchable, unread text is not)', async () => {
     mockSearch.mockReturnValue([]);
     const h = renderHook('f:refl');
     await flush();
     expect(h.current.active).toBe(true);
-    expect(h.current.zeroHint).toContain('only covers pages');
+    expect(h.current.zeroHint).toContain('document names');
   });
 
   it('debounceMs delays the run (config Library only — foreground timers)', async () => {
