@@ -20,7 +20,8 @@ AGENTS are all available today.
   protected from the US Cloud Act and the Chinese Data Security Law. On a
   paid API plan, your requests are never used to train Mistral's models.
 - **Bring your own key**: a direct link between your Supernote and your
-  Mistral account; the key is stored encrypted on the device, never synced.
+  Mistral account; the key is kept in the plugin's private storage — never
+  synced to the cloud, not in device backups.
 - **Transcripts and conversations stay on the device only**, never synced,
   never stored on Mistral's servers (requests are sent with `store: false`).
 - Still: do not send confidential information to any cloud model.

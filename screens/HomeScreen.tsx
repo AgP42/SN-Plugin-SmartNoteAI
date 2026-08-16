@@ -113,8 +113,9 @@ function HomeScreen({
           in .md or .txt.{'\n\n'}
           <Text style={styles.b}>Privacy first</Text>: open source plugin,
           AI from Mistral AI only (EU/GDPR, a paid plan never trains on your
-          data, nothing stored on their servers), your own encrypted key,
-          transcripts local-only. Anyhow, do not share confidential
+          data, nothing stored on their servers), your own key kept in the
+          plugin's private storage, transcripts local-only. Anyhow, do not
+          share confidential
           information.{'\n\n'}
           Guide and sources: github.com/AgP42/SN-Plugin-SmartNoteAI
         </Text>

@@ -52,6 +52,10 @@ export const fmtDateTime = (at: number): string => {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
+    // 24h everywhere (2026-08-15): was device-locale, so a 12h device (en-US)
+    // rendered "02:03 PM" and the pinned "14:03" test failed depending only on
+    // the runtime locale. The compact timestamp is unambiguous in 24h.
+    hour12: false,
   })}`;
 };
 

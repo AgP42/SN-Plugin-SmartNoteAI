@@ -192,7 +192,7 @@ screen.
 `[IMAGE: mistral7.jpg]`
 
 **Step 7: paste it into the plugin**: *Plugin configuration → 1 · API key* →
-*Paste from clipboard* → *Save key (encrypted)*.
+*Paste from clipboard* → *Save key*.
 
 > **Free tier.** Every feature of the plugin works on the free tier, with
 > comfortable limits: all models are available, and field-testing in July
@@ -205,7 +205,7 @@ screen.
 `[IMAGE: door1.jpg]`
 
 **Mistral API key.** Shows the current key masked. *Paste from clipboard*
-fills the field (the Supernote keyboard has no paste), *Save key (encrypted)*
+fills the field (the Supernote keyboard has no paste), *Save key*
 stores it in the plugin's private directory, never in a cloud-synced folder.
 *Delete stored key* removes it. If an old plain-text key file from an early
 version is still around, a *Delete old key file* button appears: use it.
@@ -642,7 +642,7 @@ You pay **Mistral directly**, for what you read or ask.
 
 - **Off** files never leave the device (one-time consent excepted, and that
   read is never stored).
-- Transcripts, conversations, settings and your **encrypted** key live in the
+- Transcripts, conversations, settings and your **key** (private storage) lives in the
   plugin's private directory: not cloud-synced, not visible over USB.
 - Mistral is a European company under the GDPR; a paid plan does not train on
   your data.
@@ -681,7 +681,7 @@ Our handwritten notes are among the most personal data we own, and the privacy w
 The question is not only "is the model smart?" but **"under whose laws does this text land, and who can compel access to it?"**
 
 The plugin already keeps exposure small: everything (transcripts, chats,
-settings, your encrypted key) stays **on the tablet**; each request is
+settings, your key) stays **on the tablet**; each request is
 transient: Mistral answers and keeps no memory of you beyond a short-lived
 cache that makes follow-ups cheaper, and *Off* files are never sent. (On a
 paid plan.)

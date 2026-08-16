@@ -1,5 +1,6 @@
 /**
- * 1 · API key, privacy, backup & appearance — key storage (encrypted), privacy
+ * 1 · API key, privacy, backup & appearance — key storage (private dir,
+ * obfuscated at rest — see secureKey.ts for the honest threat model), privacy
  * reset, transcript wipe, text/button sizes, toolbar side.
  * Extracted VERBATIM from App.tsx (phase 4, spec §2.2).
  */
@@ -131,7 +132,7 @@ function KeyAppScreen({
       return;
     }
     setKeyInput('');
-    setMsg('Key saved (encrypted, device-local).');
+    setMsg('Key saved to the plugin private storage (never synced).');
     await load();
   }, [keyInput, load, setMsg, flushSettings]);
 
@@ -219,7 +220,7 @@ function KeyAppScreen({
           <Text style={[styles.section, sf]}>Mistral API key</Text>
           <Text style={[styles.manual, mf]}>
             {keyOk
-              ? `Current key: ${maskKey((keyState as {config: ModelConfig}).config.apiKey)}, stored encrypted in the plugin's private storage (never synced).`
+              ? `Current key: ${maskKey((keyState as {config: ModelConfig}).config.apiKey)}, kept in the plugin's private storage — never synced to the cloud, not in device backups.`
               : 'No key stored yet. Paste your Mistral API key below.'}
           </Text>
           <Text style={[styles.modelNote, nf]}>
@@ -252,7 +253,7 @@ function KeyAppScreen({
             onPress={onSaveKey}
             disabled={keyInput.trim().length === 0}
             style={[styles.smallBtn, keyInput.trim().length === 0 && styles.smallBtnOff]}>
-            <Text style={styles.smallBtnText}>Save key (encrypted)</Text>
+            <Text style={styles.smallBtnText}>Save key</Text>
           </TouchableOpacity>
           {keyOk ? (
             <TouchableOpacity
