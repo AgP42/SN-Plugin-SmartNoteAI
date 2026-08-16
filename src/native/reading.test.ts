@@ -22,6 +22,7 @@ import {
   pdfPrintedCovered,
 } from './reading';
 import {fetchAdapter} from './fetchAdapter';
+import {noteFailure, __resetFailLedgerForTests} from './failLedger';
 import {readPageIds, readNotePageRevs} from './noteTranscripts';
 import {mutateStore, flushStore} from './transcriptStoreIo';
 import {
@@ -185,6 +186,7 @@ const idMap = (...ids: string[]): Map<number, string> =>
 beforeEach(() => {
   jest.clearAllMocks();
   clearLimbo(); // module-level parked drops must not leak between tests
+  __resetFailLedgerForTests(); // lot 3: the resume path now writes to it
   // readFileSize keeps whatever implementation a previous test installed
   // (clearAllMocks does not reset implementations): re-pin it so a leaked
   // .mark size cannot change another test's doc hash.
@@ -1749,4 +1751,31 @@ describe('cleared-page repair (pageCount truth) & anti-bleed gates', () => {
       'trustedocr',
     );
   });
+});
+
+// Lot 3 (2026-08-16): the covered-PDF resume pass answers to the SAME
+// per-page vision cap as the tick's drain — it used to be uncapped
+// (audit 2026-07-30 #1 / fix-audit D14: a deterministically failing page
+// was re-billed on every covered read, forever).
+it('resume pass: a vision-capped page is not re-billed and holds the doorbell', async () => {
+  upsertPage(storeState.store, PDF, 0, entry('', {text: 'ocr text pending vision'}), 1);
+  setDocHash(storeState.store, PDF, '5');
+  storeState.store.docs[PDF]!.markSz = 41; // doorbell rings (live mark = 42)
+  const nt = jest.requireMock('./noteTranscripts') as {readFileSize: jest.Mock};
+  nt.readFileSize.mockImplementation(async (p2: string) =>
+    p2.endsWith('.mark') ? 42 : 5,
+  );
+  noteFailure('vision', PDF, 0);
+  noteFailure('vision', PDF, 0);
+  noteFailure('vision', PDF, 0); // capped
+  route({
+    chat: () => {
+      throw new Error('capped page must not reach the paid model');
+    },
+  });
+  const r = await readPdf(baseDeps(), 'key', 'SYS', PDF);
+  expect(r.ok).toBe(true);
+  expect(r.read).toBe(0);
+  expect(getPage(storeState.store, PDF, 0)!.source).toBe('mistral-ocr');
+  expect(storeState.store.docs[PDF]!.markSz).toBe(41); // doorbell HELD open
 });

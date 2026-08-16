@@ -236,6 +236,20 @@ const renderBlockedUntil = {note: 0, pdf: 0};
 const blockRender = (kind: 'note' | 'pdf', now: number): void => {
   renderBlockedUntil[kind] = now + PROBE_RETRY_MS;
 };
+// THE render-permission predicate (lot 3, 2026-08-16) — it was written twice
+// (the note branch's skip and the drain's allowNote/allowPdf), and a future
+// clause added to one copy would silently miss the other. A kind may render
+// when the host HINT matches, on an explicit force poke (the "user switched
+// apps" moments re-probe at once), or once the probe cooldown has elapsed.
+// NOTE: the per-tick noteRenderDead stand-down is deliberately NOT folded in
+// here — it has NO force bypass (its probe failed THIS tick, fresher than
+// any hint) and dies with the tick; see its declaration.
+const renderAllowed = (
+  kind: 'note' | 'pdf',
+  hostKind: 'note' | 'pdf' | null,
+  force: boolean,
+  now: number,
+): boolean => hostKind === kind || force || now >= renderBlockedUntil[kind];
 // For the Library auto-rebind (v0.88.3): true when PDF Vision debt exists
 // but PDF renders are failing (stale host binding).
 let pdfVisionBlocked = false;
@@ -1003,11 +1017,7 @@ export const autoTranscriptTick = async (
       if (noteRenderDead) {
         continue; // this tick's probe already showed note renders failing
       }
-      if (
-        hostKind !== 'note' &&
-        opts?.force !== true &&
-        Date.now() < renderBlockedUntil.note
-      ) {
+      if (!renderAllowed('note', hostKind, opts?.force === true, Date.now())) {
         continue; // cross-host probe failed <60 s ago — no re-render yet
       }
 
@@ -1281,14 +1291,8 @@ export const autoTranscriptTick = async (
     // v0.88.3: a kind whose render probe failed <60 s ago is not re-probed
     // (force pokes re-probe at once — the "user switched apps" moments).
     const nowP = Date.now();
-    const allowNote =
-      hostKind === 'note' ||
-      opts?.force === true ||
-      nowP >= renderBlockedUntil.note;
-    const allowPdf =
-      hostKind === 'pdf' ||
-      opts?.force === true ||
-      nowP >= renderBlockedUntil.pdf;
+    const allowNote = renderAllowed('note', hostKind, opts?.force === true, nowP);
+    const allowPdf = renderAllowed('pdf', hostKind, opts?.force === true, nowP);
     if (
       key !== null &&
       visionBudget > 0 &&

@@ -81,6 +81,7 @@ import {
   pdfMissingPages,
 } from '../core/store/transcriptStore';
 import {visionMatchesOcr} from '../core/text/visionOverlap';
+import {noteFailure, clearFailure, failCapped} from './failLedger';
 import {provenGone, followRename} from './renameFollow';
 
 export const PARALLEL_READS = 4;
@@ -91,6 +92,33 @@ export const PARALLEL_READS = 4;
 // many CONSECUTIVE render failures a pass stops trying: the remaining pages
 // stay pending for a tick under the right host instead of piling errors.
 export const CONSEC_RENDER_BREAK = 3;
+// ONE pass-local render breaker (lot 3, 2026-08-16): the "abort after 3
+// consecutive FREE render failures" probe existed as two verbatim copies
+// (the note read pass and the PDF vision pass) that had to stay identical
+// by hand. `fail()` returns true when the pass must break; a successful
+// render resets the streak via `ok()`.
+const makeRenderBreaker = (
+  hostLabel: string,
+  waitLabel: string,
+): {fail: () => boolean; ok: () => void} => {
+  let consec = 0;
+  return {
+    fail: (): boolean => {
+      if (++consec >= CONSEC_RENDER_BREAK) {
+        console.log(
+          '[SmartNoteAI.read]',
+          `${CONSEC_RENDER_BREAK} renders failed in a row — no ${hostLabel} ` +
+            `host; stopping this pass (the rest waits for ${waitLabel})`,
+        );
+        return true;
+      }
+      return false;
+    },
+    ok: (): void => {
+      consec = 0;
+    },
+  };
+};
 // Anti-bleed tripwire floor (2026-08-16): only content-bearing renders are
 // compared — blank e-ink pages compress far below this and are legitimately
 // pixel-identical across documents.
@@ -754,7 +782,7 @@ export const readNotePages = async (
   const renderFailed: number[] = [];
   const visionRefused: number[] = [];
   let renderAborted = false;
-  let consecRenderFails = 0;
+  const breaker = makeRenderBreaker('note', 'the note app');
   let firstReason: string | undefined;
   let done = 0;
   let read = 0;
@@ -1044,18 +1072,13 @@ export const readNotePages = async (
         }
         done++;
         opts?.onProgress?.(done, todo.length);
-        if (++consecRenderFails >= CONSEC_RENDER_BREAK) {
+        if (breaker.fail()) {
           renderAborted = true;
-          console.log(
-            '[SmartNoteAI.read]',
-            `${CONSEC_RENDER_BREAK} renders failed in a row — no note host; ` +
-              'stopping this pass (the rest waits for the note app)',
-          );
           break;
         }
         continue;
       }
-      consecRenderFails = 0;
+      breaker.ok();
       // v1.0.4 (collecte ②): the append-only rev moves on ANY edit — even
       // write-then-erase that leaves the ink identical. The render is in
       // hand and free: hash it, and if the stored entry carries the SAME
@@ -2062,7 +2085,7 @@ const visionPassPdf = async (
   const stored: number[] = [];
   let read = 0;
   let firstReason: string | undefined;
-  let consecRenderFails = 0;
+  const breaker = makeRenderBreaker('PDF', 'a PDF to be open');
   let renderAborted = false;
   let interrupted = false;
   let processed = 0;
@@ -2122,13 +2145,8 @@ const visionPassPdf = async (
         firstReason =
           firstReason ??
           'Could not render a PDF page: open a PDF in the reader, then retry.';
-        if (++consecRenderFails >= CONSEC_RENDER_BREAK) {
+        if (breaker.fail()) {
           renderAborted = true;
-          console.log(
-            '[SmartNoteAI.read]',
-            `${CONSEC_RENDER_BREAK} renders failed in a row — no PDF host; ` +
-              'stopping this Vision pass (the rest waits for a PDF to be open)',
-          );
           break;
         }
         continue;
@@ -2165,7 +2183,7 @@ const visionPassPdf = async (
         }
         opts.seenRenders.set(h, owner);
       }
-      consecRenderFails = 0;
+      breaker.ok();
       // Phase B: an ANNOTATED page's identity is the hash of the image we
       // just rendered (free). Unchanged pixels never reach the paid model —
       // whatever the .mark byte size did.
@@ -2425,9 +2443,20 @@ const resumePdfVision = async (
       markDocTouched(pdfPath);
     });
   };
-  const todo = [...pending, ...recheck].sort((a, b) => a - b);
+  // Lot 3 (2026-08-16): this pass now answers to the SAME per-page retry
+  // cap as the tick's drain (the shared fail ledger, kind 'vision') — it
+  // used to have NO cap at all: a deterministically failing page was
+  // re-billed on every covered read forever (audit 2026-07-30 finding #1,
+  // fix-audit D14). Cap-skipped pages HOLD the doorbell exactly like
+  // lock-skips: settling over them would seal their annotation away.
+  const uncapped = [...pending, ...recheck].filter(
+    p2 => !failCapped('vision', pdfPath, p2),
+  );
+  const capSkipped =
+    pending.length + recheck.length - uncapped.length;
+  const todo = uncapped.sort((a, b) => a - b);
   if (todo.length === 0) {
-    if (doorbell && listOk && !anyLockedAnnotated) {
+    if (doorbell && listOk && !anyLockedAnnotated && capSkipped === 0) {
       // Round 11 #2: same guard as the main settle — an all-locked
       // annotated doc must keep its doorbell open for the unlock.
       await settleDoorbell();
@@ -2443,11 +2472,22 @@ const resumePdfVision = async (
     // future caller that forgets to.
     repairMissing,
   });
+  // Ledger accounting (lot 3): identical to the drain's onPageOutcome —
+  // a stored page clears its backoff, a PAID failure counts toward the
+  // 'vision' cap; render failures stay free.
+  for (const p2 of rr.stored) {
+    clearFailure('vision', pdfPath, p2);
+  }
+  for (const p2 of rr.failed) {
+    if (!rr.renderFailed.includes(p2)) {
+      noteFailure('vision', pdfPath, p2);
+    }
+  }
   // Settle only when the list was read AND every page was actually
   // attempted (annotated ⊆ pending ∪ recheck, so a clean pass covered them
-  // all). A render break, a refused request or a DEFERRED page (unattempted,
-  // fix-audit D2) leaves the doorbell open — re-entry is cheap, unchanged
-  // pages hash-skip.
+  // all). A render break, a refused request, a DEFERRED page (unattempted,
+  // fix-audit D2) or a CAP-SKIPPED page leaves the doorbell open —
+  // re-entry is cheap, unchanged pages hash-skip.
   if (
     doorbell &&
     listOk &&
@@ -2456,6 +2496,7 @@ const resumePdfVision = async (
     !rr.renderAborted &&
     !rr.interrupted &&
     rr.unattempted === 0 &&
+    capSkipped === 0 &&
     rr.failed.length === 0
   ) {
     await settleDoorbell();
