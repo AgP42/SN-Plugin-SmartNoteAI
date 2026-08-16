@@ -14,6 +14,13 @@
 import type {CaptureDeps} from './capture';
 import {setActivity, stopRequested} from './activity';
 import {listDirNative} from './fs';
+import {folderEvidence} from './renameFollow';
+import {
+  noteFailure,
+  clearFailure,
+  failCapped,
+  failCap,
+} from './failLedger';
 import {sleepHybrid} from './nativeSleep';
 import {readSettings, updateSettings} from './settings';
 import {getApiKey} from './secureKey';
@@ -188,27 +195,10 @@ export const setForegroundBusy = (v: boolean): void => {
     }
   }
 };
-// Per-page failure counter (session-scoped): a page that keeps failing
-// (blank render, non-network API error) is retried at most MAX_PAGE_FAILS
-// times, then skipped — it used to be re-billed on EVERY tick with no
-// backoff and without counting toward the session cap (audit 2026-07-18).
-const MAX_PAGE_FAILS = 3;
-const pageFails = new Map<string, number>();
-// v0.87 Vision drain: session retry counter for the VISION leg alone. A page
-// whose vision keeps failing — or keeps coming back empty (it is re-stored
-// 'mistral-ocr': no promotion without a real Ministral read, user rule
-// 2026-07-30) — would otherwise be re-billed by every tick's drain. Render
-// failures never reach this map (free, no API call — see onPageOutcome).
-const visionFails = new Map<string, number>();
-// Release audit 2026-08-12 (critical): the PDF branch of the tick had NO
-// failure accounting at all. A whole-file OCR that fails stores nothing and
-// stamps no docHash, so the document looked untouched and was re-uploaded —
-// and re-billed — at EVERY tick, forever. It was invisible to the session
-// cap too (that counts pages READ, and a failure reads none), so the 500-page
-// backstop could never engage. Same shape as pageFails, per DOCUMENT.
-const MAX_PDF_FAILS = 3;
-const pdfFails = new Map<string, number>();
-export const getPdfFails = (): ReadonlyMap<string, number> => pdfFails;
+// Failure backoff (lot 4a, 2026-08-16): the three session retry counters
+// (per-page paid read, per-page vision leg, per-document PDF OCR) live in
+// the ONE failLedger — see its header for each kind's contract and history
+// (audits 2026-07-18, 2026-08-12 critical, fix-audit D14).
 // Ghost-transcript pruning (2026-08-15): a note DELETED on the device but still
 // holding a stale store entry keeps counting "1 to read" the tick can never
 // read (the file is gone). We purge it — but ONLY after the file is confirmed
@@ -303,6 +293,10 @@ export const resolveTrackedNotes = async (
   const walk = async (dir: string): Promise<void> => {
     const entries = await listDirNative(dir);
     if (entries.length > 0) {
+      // Walk-time variant of folderEvidence's rule (lot 4b): a dir counts as
+      // ANSWERED only when it returned entries — [] is empty OR failed, so it
+      // proves nothing. Kept here because the walk already holds the listing
+      // (a per-file folderEvidence call would re-list every folder).
       answeredDirs.add(dir);
     }
     for (const e of entries) {
@@ -424,12 +418,10 @@ export const recordOwed = async (
       return; // change-check failed — keep the last good count
     }
     // Exclude pages parked by the per-page failure backoff: the read loop
-    // permanently drops them (needed.filter, MAX_PAGE_FAILS), so counting them
+    // permanently drops them (needed.filter, failCapped 'read'), so counting them
     // would show "N to sync" that Sync-now can never clear — owed must be what
     // the reader ACTUALLY attempts (redesign audit 2026-08-14).
-    readPages = need.filter(
-      p => (pageFails.get(`${notePath}#${p}`) ?? 0) < MAX_PAGE_FAILS,
-    );
+    readPages = need.filter(p => !failCapped('read', notePath, p));
   }
   const readList = readPages;
   await mutateStore(s => {
@@ -822,7 +814,7 @@ export const autoTranscriptTick = async (
             continue;
           }
           // v0.87.4: Vision-only debt is the DRAIN's job exclusively — it
-          // has the budget, the per-page visionFails cap and the render
+          // has the budget, the per-page 'vision' fail cap and the render
           // breaker. The old direct readPdf resume here bypassed every cap
           // (audit 2026-07-30 finding #1: a page whose Ministral read stays
           // empty was re-billed uncapped, twice per tick, forever).
@@ -833,14 +825,14 @@ export const autoTranscriptTick = async (
         // counter (verification pass 2026-08-12). A tap is proof the user
         // wants to spend again.
         if (opts?.trigger === 'sync' || opts?.force === true) {
-          pdfFails.delete(notePath);
+          clearFailure('doc', notePath);
         }
         // Give up on a document that keeps failing, instead of paying for
         // the same doomed whole-file OCR at every tick (release audit).
-        if ((pdfFails.get(notePath) ?? 0) >= MAX_PDF_FAILS) {
+        if (failCapped('doc', notePath)) {
           console.log(
             '[SmartNoteAI.auto]',
-            `${name}: PDF failed ${MAX_PDF_FAILS}× this session → parked ` +
+            `${name}: PDF failed ${failCap('doc')}× this session → parked ` +
               '(use Sync now to retry)',
           );
           continue;
@@ -866,19 +858,18 @@ export const autoTranscriptTick = async (
           // Nothing was stored and no docHash was stamped, so the next tick
           // would try the identical call. Count it, and SAY why — the
           // Library used to report "nothing new" while the bill grew.
-          const n = (pdfFails.get(notePath) ?? 0) + 1;
-          pdfFails.set(notePath, n);
+          const n = noteFailure('doc', notePath);
           firstFailReason =
             firstFailReason ??
             (r as {reason?: string}).reason ??
             'PDF read failed';
           console.warn(
             '[SmartNoteAI.auto]',
-            `${name}: PDF read failed (${n}/${MAX_PDF_FAILS}) — ` +
+            `${name}: PDF read failed (${n}/${failCap('doc')}) — ` +
               `${(r as {reason?: string}).reason ?? 'no reason given'}`,
           );
         } else if (r.read > 0) {
-          pdfFails.delete(notePath); // progress clears the backoff
+          clearFailure('doc', notePath); // progress clears the backoff
         }
         pagesRead += r.read;
         if (r.read > 0 && target.mode === 'auto') {
@@ -994,7 +985,7 @@ export const autoTranscriptTick = async (
             // loop and Sync-now permanently drop them, so owed must too, else it
             // shows an "N to sync" Sync-now can't clear (redesign audit).
             const readablePages = needM.filter(
-              pp => (pageFails.get(`${notePath}#${pp}`) ?? 0) < MAX_PAGE_FAILS,
+              pp => !failCapped('read', notePath, pp),
             );
             await recordOwed(deps, notePath, wantedM, readablePages);
           }
@@ -1039,11 +1030,10 @@ export const autoTranscriptTick = async (
           // unmounted / MTP-locked / stalled — during an outage the walk, the
           // footer read AND readFileSize all fail on a PRESENT file, and pruning
           // it would delete + re-bill an intact transcript. Confirm the file is
-          // REALLY gone by listing its OWN folder, the same "empty listing !=
-          // failed listing" proof resolveTrackedNotes uses for rename inference:
-          const dir = notePath.slice(0, notePath.lastIndexOf('/'));
-          const siblings = await listDirNative(dir).catch(() => []);
-          if (siblings.some(e => `${dir}/${e.name}` === notePath)) {
+          // REALLY gone via THE evidence primitive (lot 4b — folderEvidence,
+          // the same "empty listing != failed listing" rule every proof uses):
+          const ev = await folderEvidence(notePath);
+          if (ev === 'present') {
             // The folder still lists this file → it exists, we just could not
             // open it this tick (a lock / transient) → not a ghost.
             ghostStreak.delete(notePath);
@@ -1053,7 +1043,7 @@ export const autoTranscriptTick = async (
             );
             continue;
           }
-          if (siblings.length === 0) {
+          if (ev === 'no-proof') {
             // Empty / unreadable listing = no proof storage is even live →
             // hold the streak (neither advance nor reset) and never prune.
             // Fail-safe: a lingering ghost is cosmetic and Clear-able; a false
@@ -1064,7 +1054,7 @@ export const autoTranscriptTick = async (
             );
             continue;
           }
-          // The folder ANSWERED with other files but not this one → truly gone.
+          // 'proven-gone': the folder ANSWERED with other files, not this one.
           const n = (ghostStreak.get(notePath) ?? 0) + 1;
           if (n >= CONSEC_GHOST_TICKS) {
             ghostStreak.delete(notePath);
@@ -1103,19 +1093,21 @@ export const autoTranscriptTick = async (
         );
         continue;
       }
-      // Backoff: drop pages that already failed MAX_PAGE_FAILS times this
+      // Backoff: drop pages that already failed failCap('read') times this
       // session (they'd be re-billed every tick otherwise).
       let failSkipped = false;
       {
         const before = needed.length;
         needed = needed.filter(
-          p => (pageFails.get(`${notePath}#${p}`) ?? 0) < MAX_PAGE_FAILS,
+          p => !failCapped('read', notePath, p),
         );
         if (needed.length !== before) {
           failSkipped = true;
           console.log(
             '[SmartNoteAI.auto]',
-            `${name}: ${before - needed.length} page(s) skipped after ${MAX_PAGE_FAILS} failures (this session)`,
+            `${name}: ${before - needed.length} page(s) skipped after ${failCap(
+              'read',
+            )} failures (this session)`,
           );
         }
       }
@@ -1206,13 +1198,12 @@ export const autoTranscriptTick = async (
           (r as {renderFailed?: number[]}).renderFailed ?? [],
         );
         for (const p of todo) {
-          const k = `${notePath}#${p}`;
           if (r.failed.includes(p)) {
             if (!freeRenderFails.has(p)) {
-              pageFails.set(k, (pageFails.get(k) ?? 0) + 1);
+              noteFailure('read', notePath, p);
             }
           } else {
-            pageFails.delete(k);
+            clearFailure('read', notePath, p);
           }
         }
         if (!r.ok && r.reason !== undefined && /Network error/i.test(r.reason)) {
@@ -1278,7 +1269,7 @@ export const autoTranscriptTick = async (
     // host), for every mode except Off — that OCR was paid on a legitimate
     // trigger, finishing its Vision is completing the same read, not a new
     // spend. Budget shared with the structural reads above; per-page session
-    // retry cap via visionFails; the page on screen defers like everywhere
+    // retry cap via the 'vision' fail ledger; the page on screen defers like everywhere
     // else (its render can come back blank on a background pass).
     // v0.87.4: no `kind` filter and no host gate any more — the drain
     // attempts BOTH types every tick and lets the per-kind render breakers
@@ -1322,7 +1313,7 @@ export const autoTranscriptTick = async (
             setActivity({label: 'Vision', done, total: totalV}),
           pageFilter: (path, page) =>
             !capReached() &&
-            (visionFails.get(`${path}#${page}`) ?? 0) < MAX_PAGE_FAILS &&
+            !failCapped('vision', path, page) &&
             !(
               trigger === 'background' &&
               opts?.includeCurrent !== true &&
@@ -1330,11 +1321,10 @@ export const autoTranscriptTick = async (
               page === currentPage
             ),
           onPageOutcome: (path, page, ok) => {
-            const k = `${path}#${page}`;
             if (ok) {
-              visionFails.delete(k);
+              clearFailure('vision', path, page);
             } else {
-              visionFails.set(k, (visionFails.get(k) ?? 0) + 1);
+              noteFailure('vision', path, page);
             }
           },
         },

@@ -24,21 +24,40 @@ import {
   migrateAgentPaths,
 } from '../core/store/renamePath';
 
-// Is this file PROVEN absent from its folder? Never a guess: see the
-// evidence rule above.
-export const provenGone = async (path: string): Promise<boolean> => {
+// THE ONE evidence primitive (lot 4b, 2026-08-16). This rule used to live in
+// three hand-synchronized copies — here, the ghost-prune's folder re-listing
+// (autoTranscript), and resolveTrackedNotes' walk-time answeredDirs — each
+// with its own subtle reading. Every per-file proof now goes through this
+// single three-valued answer; the walk-time variant stays where the walk is
+// (it already holds the listing) but documents this as its contract.
+//   'present'     the folder ANSWERED and lists the file
+//   'proven-gone' the folder ANSWERED with other entries — and not the file
+//   'no-proof'    empty or failed listing (an unmounted SD looks exactly
+//                 like an empty folder): conclude nothing, change nothing
+export type FolderEvidence = 'present' | 'proven-gone' | 'no-proof';
+
+export const folderEvidence = async (
+  path: string,
+): Promise<FolderEvidence> => {
   const cut = path.lastIndexOf('/');
   if (cut <= 0) {
-    return false;
+    return 'no-proof';
   }
   const dir = path.slice(0, cut);
   const base = path.slice(cut + 1);
-  const entries = await listDirNative(dir);
+  const entries = await listDirNative(dir).catch(() => []);
   if (entries.length === 0) {
-    return false; // empty folder OR failed listing — indistinguishable
+    return 'no-proof'; // empty folder OR failed listing — indistinguishable
   }
-  return !entries.some(e => !e.isDir && e.name === base);
+  return entries.some(e => !e.isDir && e.name === base)
+    ? 'present'
+    : 'proven-gone';
 };
+
+// Is this file PROVEN absent from its folder? Never a guess: see the
+// evidence rule above.
+export const provenGone = async (path: string): Promise<boolean> =>
+  (await folderEvidence(path)) === 'proven-gone';
 
 // The whole follow-through for a CONFIRMED rename. Callers own the proof
 // that `from` is gone and that `to` now carries its content.
