@@ -730,6 +730,20 @@ export const autoTranscriptTick = async (
       if (opts?.modeFilter !== undefined && target.mode !== opts.modeFilter) {
         continue;
       }
+      // An explicit user sync REALLY retries (verification pass 2026-08-12,
+      // fix-verify 2026-08-16): the TAP re-arms this target's backoffs —
+      // the whole-doc counter and every page's vision counter — so "use
+      // Sync now to retry" is true for notes AND covered PDFs (the covered
+      // gate below continues before the PDF branch, so this must run at
+      // the top of the loop). trigger 'sync' ONLY, never bare force:
+      // internal pokes (after a chat send, drain-continue, startup) carry
+      // force and would re-arm doomed pages on every poke — unbounded
+      // re-billing, the exact D14 class the ledger exists to close. Both
+      // user buttons (Sync now, Force sync) pass trigger 'sync'.
+      if (opts?.trigger === 'sync') {
+        clearFailure('doc', notePath);
+        clearFailuresFor('vision', notePath);
+      }
       // v0.87.4 (user: "le plugin doit s'adapter tout seul"): the host HINT
       // (getCurrentFilePath) reflects which app last INVOKED the plugin —
       // not what is on screen — and goes stale when the user switches apps
@@ -834,17 +848,6 @@ export const autoTranscriptTick = async (
           // (audit 2026-07-30 finding #1: a page whose Ministral read stays
           // empty was re-billed uncapped, twice per tick, forever).
           continue;
-        }
-        // An explicit user sync REALLY retries: the parking message said
-        // "use Sync now to retry" and it was a lie — nothing cleared the
-        // counter (verification pass 2026-08-12). A tap is proof the user
-        // wants to spend again.
-        if (opts?.trigger === 'sync' || opts?.force === true) {
-          clearFailure('doc', notePath);
-          // Fix-audit lot-3 #1: the tap also re-arms the per-page vision
-          // backoff of THIS doc — capped pages become reachable again,
-          // exactly what the parking message promises.
-          clearFailuresFor('vision', notePath);
         }
         // Give up on a document that keeps failing, instead of paying for
         // the same doomed whole-file OCR at every tick (release audit).

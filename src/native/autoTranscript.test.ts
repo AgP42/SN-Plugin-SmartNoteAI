@@ -954,3 +954,20 @@ describe('doc-failure counting (fix-audit lot-3, 2026-08-16)', () => {
     expect(led.failCount('vision', PDFT, 4)).toBe(0); // the tap re-armed it
   });
 });
+
+it("an INTERNAL force poke (no trigger 'sync') never re-arms the backoffs", async () => {
+  const led = jest.requireActual('./failLedger') as typeof import('./failLedger');
+  led.__resetFailLedgerForTests();
+  const PDFT = '/Note/tracked.pdf';
+  led.noteFailure('vision', PDFT, 4);
+  led.noteFailure('vision', PDFT, 4);
+  led.noteFailure('vision', PDFT, 4);
+  settingsMock.mockResolvedValue({autoTargets: {[PDFT]: {mode: 'auto'}}});
+  fileSizeMock.mockResolvedValue(500);
+  readPdfMock.mockResolvedValue({ok: true, read: 0, failed: []});
+  nowMs += 60_000;
+  // force WITHOUT trigger 'sync' = the shape of every internal poke
+  // (foreground-done after a chat send, drain-continue, startup).
+  await autoTranscriptTick(deps(), {force: true});
+  expect(led.failCapped('vision', PDFT, 4)).toBe(true); // still parked
+});

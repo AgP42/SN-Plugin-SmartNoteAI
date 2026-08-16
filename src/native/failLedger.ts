@@ -22,8 +22,14 @@ const CAPS: Record<FailKind, number> = {read: 3, vision: 3, doc: 3};
 
 const fails = new Map<string, number>();
 
+// '\u0000' separates path from page: it is the one character that cannot
+// appear in a file path, so a sweep prefix can never cross into another
+// document ('#' is LEGAL in Android filenames — fix-verify 2026-08-16 #3:
+// /Document/a.pdf and /Document/a.pdf#old.pdf must never collide).
 const keyOf = (kind: FailKind, path: string, page?: number): string =>
-  page === undefined ? `${kind}:${path}` : `${kind}:${path}#${page}`;
+  page === undefined
+    ? `${kind}:${path}`
+    : `${kind}:${path}\u0000${page}`;
 
 // Record one failed attempt; returns the new count (for logs).
 export const noteFailure = (
@@ -64,11 +70,11 @@ export const failCap = (kind: FailKind): number => CAPS[kind];
 // Sweep every page of one document for one kind (fix-audit lot-3 #1): an
 // explicit Sync is the user's proof they want to spend again — it re-arms
 // the per-page 'vision' backoff of the synced doc, exactly like the
-// uncapped resume used to retry those pages on every Sync. Key format is
-// `kind:path` or `kind:path#page`, so the prefix match cannot cross paths.
+// uncapped resume used to retry those pages on every Sync. The page
+// separator is NUL (see keyOf), so the prefix match cannot cross paths.
 export const clearFailuresFor = (kind: FailKind, path: string): void => {
   const exact = `${kind}:${path}`;
-  const prefix = `${exact}#`;
+  const prefix = `${exact}\u0000`;
   for (const k of [...fails.keys()]) {
     if (k === exact || k.startsWith(prefix)) {
       fails.delete(k);
