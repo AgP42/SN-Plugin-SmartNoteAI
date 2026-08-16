@@ -308,6 +308,9 @@ export const makeStyles = (scale: number, btnScale: number) =>
     paddingVertical: 4 * btnScale,
   },
   copyText: {fontSize: 11 * scale, color: '#000000'},
+  // 🌐 badge (2026-08-16): a REAL web_search ran for this answer — its
+  // absence means the text (sources included) came from the model's memory.
+  webBadge: {fontSize: 10 * scale, color: '#555555', marginBottom: 2},
   busyBar: {
     flexDirection: 'row',
     alignItems: 'center',

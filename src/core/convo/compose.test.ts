@@ -1,4 +1,4 @@
-import {composeUserText, DEFAULT_SYSTEM} from './compose';
+import {composeUserText, DEFAULT_SYSTEM, NO_LIVE_TOOLS_LINE, WEB_TOOL_LINE} from './compose';
 
 describe('composeUserText', () => {
   it('returns just the message when there is no page text', () => {
@@ -60,5 +60,17 @@ describe('stripContextBlocks', () => {
       'q\n\n--- Added: "N" p.2 (transcribed) ---\nt\n\n--- Page (transcribed) ---\np',
     );
     expect(out).toBe('q');
+  });
+});
+
+// Anti-confabulation (2026-08-16, the "Madrid forecast" incident).
+describe('anti-confabulation prompt lines', () => {
+  it('the static clause forbids invented sources', () => {
+    expect(DEFAULT_SYSTEM).toContain('Never invent sources');
+  });
+  it('the per-message lines exist and say opposite things about tools', () => {
+    expect(NO_LIVE_TOOLS_LINE).toContain('No live tools');
+    expect(NO_LIVE_TOOLS_LINE).toContain('do NOT cite or construct any source URL');
+    expect(WEB_TOOL_LINE).toContain('web_search tool is available');
   });
 });

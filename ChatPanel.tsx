@@ -42,6 +42,8 @@ import {modelSupportsTools} from './src/native/modelCaps';
 import {
   composeAddedText,
   stripContextBlocks,
+  NO_LIVE_TOOLS_LINE,
+  WEB_TOOL_LINE,
   type AddedBlock,
 } from './src/core/convo/compose';
 import {
@@ -1260,15 +1262,6 @@ export default function ChatPanel({
           wireImages.length > 0
             ? {...outgoing, images: wireImages.map(c => c.image)}
             : outgoing;
-        const chatReq = {
-          system,
-          // Local "⚠ …" failure bubbles stay OUT of what the model sees
-          // (audit 2026-07-19 A4) — they are UI state, not conversation.
-          turns: [...prior, outgoingWire].filter(t => t.error !== true),
-          maxTokens: keyState.config.maxTokens,
-          cacheKey: convId.current,
-          ...(styleTemp !== undefined ? {temperature: styleTemp} : {}),
-        };
         // One-shot connectors ARMED → this message goes through the
         // Conversations API; otherwise plain chat completions (cheaper:
         // prompt caching — Conversations has no prompt_cache_key). The
@@ -1278,8 +1271,23 @@ export default function ChatPanel({
         const tools: ConnectorTool[] = modelLacksTools(cfg.model)
           ? []
           : [...(armWeb ? (['web_search'] as const) : [])];
+        const chatReq = {
+          // Anti-confabulation (the Madrid incident, 2026-08-16): tell the
+          // model — from the SAME condition that builds tools[] — whether a
+          // live tool exists for this message. The unarmed line is constant,
+          // so the completions prompt-cache prefix still matches.
+          system:
+            system + (tools.length > 0 ? WEB_TOOL_LINE : NO_LIVE_TOOLS_LINE),
+          // Local "⚠ …" failure bubbles stay OUT of what the model sees
+          // (audit 2026-07-19 A4) — they are UI state, not conversation.
+          turns: [...prior, outgoingWire].filter(t => t.error !== true),
+          maxTokens: keyState.config.maxTokens,
+          cacheKey: convId.current,
+          ...(styleTemp !== undefined ? {temperature: styleTemp} : {}),
+        };
         let r;
         let sources: {title: string; url: string}[] = [];
+        let webUsed = false;
         // v0.80.0 (audit): the outer 90 s self-abort is gone — mistralRequest
         // enforces its own 60 s per-attempt timeout (with an honest "Request
         // timed out" message), which always fired first anyway. The manual
@@ -1302,6 +1310,10 @@ export default function ChatPanel({
                   `connectors used: ${cr.toolsUsed.join(', ')}`,
                 );
               }
+              // 🌐 badge (2026-08-16): only a turn produced by a REAL web
+              // run gets the marker — the prompt reduces confabulation, the
+              // badge is the signal that cannot lie.
+              webUsed = cr.toolsUsed.includes('web_search');
             }
             r = cr;
           } else {
@@ -1368,7 +1380,11 @@ export default function ChatPanel({
           ...prior,
           outgoing,
           r.ok
-            ? {role: 'assistant', text: r.text + sourcesBlock}
+            ? {
+                role: 'assistant',
+                text: r.text + sourcesBlock,
+                ...(webUsed ? {web: true as const} : {}),
+              }
             : {role: 'assistant', text: `⚠ ${failText}`, error: true},
         ]);
       } finally {

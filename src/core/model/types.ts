@@ -22,6 +22,11 @@ export type ChatTurn = {
   // assistant turn (audit 2026-07-19 A4: the model was answering to its
   // own supposed error messages).
   error?: boolean;
+  // 🌐 (2026-08-16): this assistant turn was produced by a REAL web_search
+  // run. Rendered as a badge; its absence tells the user the answer came
+  // from the model's memory (the "Madrid forecast" confabulation had
+  // convincing fake sources — the badge cannot be faked).
+  web?: true;
   // v0.81: this stored (text-only) user turn was sent with lasso image(s)
   // attached — a light 🖼 marker in the bubble. The images live in the
   // conversation's ctxImages, not in the turn.

@@ -21,7 +21,28 @@ export const DEFAULT_SYSTEM =
   'asked otherwise. ' +
   'Blocks labelled "--- Added: … ---" are extra pages the user attached ' +
   'from a library search: use them as additional context. ' +
+  'Never invent sources: cite only URLs returned by a web search run in ' +
+  'this conversation. ' +
   'Answer in the user’s language.';
+
+// Anti-confabulation, per-message (2026-08-16 — the "Madrid forecast"
+// incident: with Web unarmed, the model answered a weather question with
+// climatology dressed as a live forecast, plus FABRICATED source links
+// imitating the previous armed answer). One of these two lines is appended
+// to the system prompt AT THE SEND SITE, computed from the same condition
+// as the request's tools[] — impossible to desynchronize. The unarmed line
+// is byte-identical on every plain send, so the prompt-cache prefix of the
+// cheap completions path still matches.
+export const NO_LIVE_TOOLS_LINE =
+  ' No live tools are available for this message. Your knowledge has a ' +
+  'training cutoff: do NOT present remembered data as current, and do NOT ' +
+  'cite or construct any source URL. For time-sensitive questions ' +
+  '(weather, news, prices, schedules), say plainly that live data needs ' +
+  'the Web button, then answer from general knowledge only if clearly ' +
+  'labelled as such.';
+export const WEB_TOOL_LINE =
+  ' A web_search tool is available for THIS message; cite only the URLs ' +
+  'it returns.';
 
 // v0.75.2 (user decision): the old hidden PLAIN_TEXT_RULE — which forced
 // every answer to plain text, "no Markdown, no tables" — is REMOVED. The

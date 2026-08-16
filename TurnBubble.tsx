@@ -35,12 +35,17 @@ export function TurnBubble(props: {
           {stripContextBlocks(t.text)}
         </Text>
       ) : (
+        <>
+        {t.web === true ? (
+          <Text style={styles.webBadge}>🌐 web</Text>
+        ) : null}
         <MarkdownView
           text={t.text}
           scale={props.scale}
           baseStyle={styles.bubbleText}
           selectable
         />
+        </>
       )}
       {t.role === 'assistant' ? (
         <View style={styles.copyRow}>
