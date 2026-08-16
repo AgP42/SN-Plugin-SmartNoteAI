@@ -14,7 +14,6 @@
  */
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
-  PixelRatio,
   Image,
   NativeModules,
   PanResponder,
@@ -89,34 +88,6 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   })();
   const pos = useRef({x: openGeo.x, y: openGeo.y});
   const size = useRef({w: openGeo.w, h: openGeo.h});
-  // v1.0.29 (device screenshot, Manta): the panel content sometimes laid out
-  // on a STALE window size after a native resize (menu↔chat switch, snap) —
-  // context chips clipped under the header, an empty stretched column. The
-  // refs above never re-render React, and the ReactRootView's own measure
-  // propagation lost the race on e-ink. This STATE mirrors every size change
-  // and gives the root container an EXPLICIT width/height, so yoga always
-  // lays out for the size we just asked the window to be.
-  const [winSize, setWinSize] = useState({w: openGeo.w, h: openGeo.h});
-  // Correct the mirror with the size the window ACTUALLY got (the WM may
-  // clamp a request — v1.0.31: a ~12px right clip on the Manta was exactly
-  // requested-minus-applied). Called after every resize below; the native
-  // side answers post-layout.
-  const syncWinFromNative = useCallback(async () => {
-    try {
-      const r = await (ov &&
-        (ov as {getWindowSize?: () => Promise<{success?: boolean; width?: number; height?: number}>})
-          .getWindowSize?.());
-      if (r && r.success && r.width && r.height && r.width > 0) {
-        setWinSize(cur =>
-          cur.w === r.width && cur.h === r.height
-            ? cur
-            : {w: r.width!, h: r.height!},
-        );
-      }
-    } catch {
-      // keep the requested mirror
-    }
-  }, [ov]);
 
   // Live value for the subscription below (state is stale in its closure).
   const viewRef = useRef(view);
@@ -125,12 +96,10 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   const goChat = useCallback(() => {
     pos.current = {x: PANEL.x, y: PANEL.y};
     size.current = {w: PANEL.width, h: PANEL.height};
-    setWinSize({w: PANEL.width, h: PANEL.height});
     ov && ov.move && ov.move(PANEL.x, PANEL.y);
     ov && ov.resize && ov.resize(PANEL.width, PANEL.height);
     setView('chat');
-    syncWinFromNative();
-  }, [ov, syncWinFromNative]);
+  }, [ov]);
 
   const goMenu = useCallback(async () => {
     let sw = screen.current.w;
@@ -148,12 +117,10 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
     const o = menuOrigin(sw, sh, toolbarSide.current, m.width, m.height);
     pos.current = {x: o.x, y: o.y};
     size.current = {w: m.width, h: m.height};
-    setWinSize({w: m.width, h: m.height});
     ov && ov.move && ov.move(o.x, o.y);
     ov && ov.resize && ov.resize(m.width, m.height);
     setView('menu');
-    syncWinFromNative();
-  }, [ov, syncWinFromNative]);
+  }, [ov]);
 
   // v1.0.27 (device report, A5X): the toolbar menu tap while this window is
   // ALREADY open reaches the live overlay here (native open() keeps the
@@ -310,10 +277,8 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       return;
     }
     if (mode === 'collapsed') {
-      setWinSize({w: COLLAPSED, h: COLLAPSED});
       ov.resize && ov.resize(COLLAPSED, COLLAPSED);
       ov.move && ov.move(pos.current.x, pos.current.y);
-      syncWinFromNative();
     } else {
       // Restoring from a bubble parked near an edge: re-clamp for the
       // full panel size so it comes back entirely on-screen.
@@ -324,11 +289,9 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
         size.current.h,
       );
       ov.move && ov.move(pos.current.x, pos.current.y);
-      setWinSize({w: size.current.w, h: size.current.h});
       ov.resize && ov.resize(size.current.w, size.current.h);
-      syncWinFromNative();
     }
-  }, [mode, ov, syncWinFromNative]);
+  }, [mode, ov]);
 
   // A lasso can be fired while the panel is COLLAPSED to a bubble (the
   // window stays open and this component mounted). The seed then reaches
@@ -342,13 +305,6 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // to the full panel.
   useEffect(() => subscribeLassoSeed(() => setMode('normal')), []);
 
-  // Mount: the fresh window may differ from the openGeo fallbacks (index.js
-  // opened it with live screen numbers) — mirror reality once.
-  useEffect(() => {
-    syncWinFromNative();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const snap = useCallback(
     async (kind: SnapKind) => {
       if (!ov) {
@@ -358,10 +314,8 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       if (kind === 'default') {
         pos.current = {x: PANEL.x, y: PANEL.y};
         size.current = {w: PANEL.width, h: PANEL.height};
-        setWinSize({w: PANEL.width, h: PANEL.height});
         ov.move && ov.move(PANEL.x, PANEL.y);
         ov.resize && ov.resize(PANEL.width, PANEL.height);
-        syncWinFromNative();
         return;
       }
       let w = FALLBACK_W;
@@ -414,12 +368,10 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       ny = Math.max(0, Math.min(ny, h - nh));
       pos.current = {x: nx, y: ny};
       size.current = {w: nw, h: nh};
-      setWinSize({w: nw, h: nh});
       ov.move && ov.move(nx, ny);
       ov.resize && ov.resize(nw, nh);
-      syncWinFromNative();
     },
-    [ov, syncWinFromNative],
+    [ov],
   );
 
   const dragPan = useRef(
@@ -466,11 +418,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
           size.current.w + g.dx,
           size.current.h + g.dy,
         );
-        // State on RELEASE only: re-rendering the panel at drag cadence is
-        // too heavy for e-ink; the content settles to the final size here.
-        setWinSize({w: size.current.w, h: size.current.h});
         ov && ov.resize && ov.resize(size.current.w, size.current.h);
-        syncWinFromNative();
       },
     }),
   ).current;
@@ -530,18 +478,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // panel now stays mounted-but-hidden while the menu shows.
   const inMenu = view === 'menu';
   return (
-    <View
-      style={[
-        styles.fill,
-        // winSize is in PIXELS (the native window units); RN styles are in
-        // dp — dividing by the density is what makes the explicit size land
-        // exactly on the window (v1.0.30: the v1.0.29 fix applied px as dp,
-        // so the content laid out ~1.3× too wide and clipped on the right).
-        {
-          width: winSize.w / PixelRatio.get(),
-          height: winSize.h / PixelRatio.get(),
-        },
-      ]}>
+    <View style={styles.fill}>
       {inMenu ? (
         <MenuScreen
           scale={1}
@@ -551,7 +488,9 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
           headerHandlers={dragPan.panHandlers}
         />
       ) : null}
-      <View style={[styles.panelWrap, inMenu ? styles.hiddenKeepMounted : null]}>
+      <View
+        style={[styles.panelWrap, inMenu ? styles.hiddenKeepMounted : null]}
+        pointerEvents={inMenu ? 'none' : 'auto'}>
         <ChatPanel
           onClose={close}
           onCollapse={() => setMode('collapsed')}
@@ -590,8 +529,20 @@ const styles = StyleSheet.create({
   // corner) is grabbable with a FINGER, not just the stylus tip.
   panelWrap: {flex: 1, marginBottom: 30},
   // Kept MOUNTED (conversation state lives there) but invisible and
-  // untouchable while the menu view is up.
-  hiddenKeepMounted: {display: 'none'},
+  // untouchable while the menu view is up. v1.0.32: NOT display:'none' —
+  // a none subtree LEAVES the layout, so while the menu was up the panel
+  // never tracked the window resizes and came back on a STALE layout
+  // (chips under the header, stretched empty column — the original device
+  // report). Absolute + opacity 0 keeps it laying out on every pass, at
+  // every window size, on every device (no per-screen numbers involved).
+  hiddenKeepMounted: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0,
+  },
   resizeHandle: {
     position: 'absolute',
     right: 0,
