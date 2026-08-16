@@ -850,7 +850,7 @@ export const autoTranscriptTick = async (
           key,
           assemblePdfVisionPrompt(settings.promptBlocks),
           notePath,
-          {skipVision: !canRenderPdf},
+          {skipVision: !canRenderPdf, attended},
         ).catch(() => ({
           ok: false,
           read: 0,
@@ -1316,6 +1316,7 @@ export const autoTranscriptTick = async (
             ? {}
             : {kind: allowNote ? ('note' as const) : ('pdf' as const)}),
           limit: visionBudget,
+          attendedHint: attended,
           shouldStop: stopRequested,
           onProgress: (done, totalV) =>
             setActivity({label: 'Vision', done, total: totalV}),

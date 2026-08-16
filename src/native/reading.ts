@@ -1194,6 +1194,11 @@ export const finishVisionLive = async (
     // (free, no API attempt) nor for pages skipped by Stop. The tick's
     // session retry counter hangs on this.
     onPageOutcome?: (path: string, page: number, ok: boolean) => void;
+    // Fix-audit 2026-08-16 (D1): this drain runs on a USER-INITIATED tick
+    // (sync/force) — the host hint was just refreshed, so missing pages of
+    // the hinted doc may be collected and repaired. Background ticks never
+    // repair baseline-less pages.
+    attendedHint?: boolean;
   },
 ): Promise<{
   read: number;
@@ -1209,6 +1214,16 @@ export const finishVisionLive = async (
 }> => {
   const store = await loadStore();
   const offTargets = (await readSettings()).autoTargets ?? {};
+  // Fix-audit 2026-08-16 (D1/D4): baseline-less MISSING pages are collected
+  // only when this pass is USER-INITIATED (attendedHint — the tap just
+  // refreshed the invoker-scoped host hint) AND the doc is the hinted one.
+  // Everything else would only be deferred downstream — so it is filtered
+  // HERE and never consumes the per-tick budget (D4 starvation).
+  const curRaw = await deps.getCurrentFilePath().catch(() => null);
+  const curPath =
+    typeof curRaw === 'string'
+      ? curRaw
+      : ((curRaw as {result?: unknown})?.result as string | undefined) ?? null;
   const byNote = new Map<string, number[]>();
   const ocrHints = new Map<string, {text: string; low?: LowWord[]}>();
   const byPdf = new Map<string, number[]>(); // Option A: PDFs finish Vision too
@@ -1266,7 +1281,7 @@ export const finishVisionLive = async (
     // covered gate now routes to it. pdfMissingPages self-guards doc locks;
     // a missing page cannot carry a page lock (locks live on entries) and
     // has no settled marker, so only the caller's pageFilter applies.
-    if (isPdf) {
+    if (isPdf && opts?.attendedHint === true && curPath === path) {
       for (const page of pdfMissingPages(store, path)) {
         if (opts?.pageFilter !== undefined && !opts.pageFilter(path, page)) {
           continue;
@@ -1412,15 +1427,6 @@ export const finishVisionLive = async (
   // exactly the host-stuck failure the drain is most exposed to (many docs
   // rendered under one foreground doc — 2026-08-16 bleed analysis).
   const seenRenders = new Map<string, string>();
-  // MISSING pages (no entry → no anti-bleed baseline) are only repaired for
-  // the doc the user actually has on screen (audit 2026-08-16 #0/#1/#10) —
-  // the one condition under which the render cannot cross documents. The
-  // hint is read once per pass; for every other doc the debt just waits.
-  const curRaw = await deps.getCurrentFilePath().catch(() => null);
-  const curPath =
-    typeof curRaw === 'string'
-      ? curRaw
-      : ((curRaw as {result?: unknown})?.result as string | undefined) ?? null;
   for (const [pdfPath, pages] of byPdf) {
     if (opts?.shouldStop?.() || pdfRenderBlocked) {
       pending += pages.length;
@@ -1431,7 +1437,8 @@ export const finishVisionLive = async (
       shouldStop: opts?.shouldStop,
       onProgress: done => opts?.onProgress?.(base + done, total),
       seenRenders,
-      repairMissing: curPath === pdfPath,
+      // Mirrors the collection gate above (belt-and-braces for visionPassPdf).
+      repairMissing: opts?.attendedHint === true && curPath === pdfPath,
     });
     await flushStore();
     read += rr.read;
@@ -2191,7 +2198,8 @@ const visionPassPdf = async (
           failed.push(page);
           firstReason =
             firstReason ??
-            'Vision returned another page\'s text — rejected (render mismatch).';
+            'Vision text did not match this page — rejected. Use "Redo AI" ' +
+              'with this PDF open to force a re-read.';
           console.log(
             '[SmartNoteAI.read]',
             `bleed-gate: vision text for ${pdfPath.split('/').pop()} p${
@@ -2205,9 +2213,6 @@ const visionPassPdf = async (
           // uncapped resume path. The page KEEPS its safe OCR text and is
           // marked vision-settled at this content; the escape hatch is the
           // explicit Redo with THIS PDF open (which skips the gate).
-          // Annotated re-checks are NOT settled: their doorbell must stay
-          // open so new ink is read once a clean render comes (bounded by
-          // the drain's per-session retry cap).
           if (cur?.source === 'mistral-ocr') {
             const dh = getDocHash(await loadStore(), pdfPath);
             await mutateStore(st => {
@@ -2217,6 +2222,24 @@ const visionPassPdf = async (
               const e = getPage(st, pdfPath, page);
               if (e !== null && e.source === 'mistral-ocr') {
                 e.va = annTag ?? `d:${dh}`;
+              }
+              markDocTouched(pdfPath);
+            });
+          } else if (annTag !== null) {
+            // Annotated re-check rejected (fix-audit D3): stamp the PIXELS so
+            // THIS ink state is never re-billed — an erase-and-rewrite on a
+            // sparse page mismatches its own old text deterministically, and
+            // without the stamp every chat send re-paid the same rejected
+            // call (the resume path has no per-page cap). The old text stays;
+            // the NEXT ink change re-rings the recheck, and the explicit
+            // "Redo AI" (no gate on 'medium' pages) stores a fresh read now.
+            await mutateStore(st => {
+              if (isPageLocked(st, pdfPath, page)) {
+                return false;
+              }
+              const e = getPage(st, pdfPath, page);
+              if (e !== null) {
+                e.vh = annTag;
               }
               markDocTouched(pdfPath);
             });
@@ -2335,9 +2358,32 @@ const resumePdfVision = async (
   visionSystem: string,
   pdfPath: string,
   store: Store,
-  opts?: {signal?: AbortSignal; eph?: boolean; markSize?: number},
+  opts?: {
+    signal?: AbortSignal;
+    eph?: boolean;
+    markSize?: number;
+    // Audit fix-audit 2026-08-16 (D1): the missing-page repair may only run
+    // on a USER-INITIATED pass (sync / chat / Library tap) — the invocation
+    // just refreshed the host hint, which is otherwise invoker-scoped and
+    // can go stale (autoTranscript.ts device repro 2026-07-30). Background
+    // passes never repair baseline-less pages.
+    attended?: boolean;
+  },
 ): Promise<ReadOutcome> => {
-  const pending = pendingVisionPages(store, pdfPath);
+  // D4 (fix-audit): pages the pass cannot repair are filtered at COLLECTION
+  // time, so they never consume attempts or budget — the debt stays visible
+  // through pendingVisionPages/counts and is picked up by the first attended
+  // pass with this doc open.
+  const curRaw0 = await deps.getCurrentFilePath().catch(() => null);
+  const curPath0 =
+    typeof curRaw0 === 'string'
+      ? curRaw0
+      : ((curRaw0 as {result?: unknown})?.result as string | undefined) ?? null;
+  const repairMissing = opts?.attended === true && curPath0 === pdfPath;
+  const docForFilter = store.docs[pdfPath];
+  const pending = pendingVisionPages(store, pdfPath).filter(
+    p => repairMissing || docForFilter?.pages[String(p)] !== undefined,
+  );
   const doc = store.docs[pdfPath];
   const liveMark = opts?.markSize ?? 0;
   const doorbell = doc !== undefined && pdfMarkSzOf(doc) !== liveMark;
@@ -2388,22 +2434,20 @@ const resumePdfVision = async (
     }
     return {ok: true, read: 0, failed: []};
   }
-  const curRaw = await deps.getCurrentFilePath().catch(() => null);
-  const curPath =
-    typeof curRaw === 'string'
-      ? curRaw
-      : ((curRaw as {result?: unknown})?.result as string | undefined) ?? null;
   const rr = await visionPassPdf(deps, apiKey, visionSystem, pdfPath, todo, {
     ...opts,
     ...(annotatedList !== null ? {annotated: new Set(annotatedList)} : {}),
     seenRenders: new Map<string, string>(),
-    // Missing pages repaired only for the on-screen doc (audit 2026-08-16).
-    repairMissing: curPath === pdfPath,
+    // Belt-and-braces: the collection filter above already withheld missing
+    // pages on unattended passes; this keeps visionPassPdf safe for any
+    // future caller that forgets to.
+    repairMissing,
   });
   // Settle only when the list was read AND every page was actually
   // attempted (annotated ⊆ pending ∪ recheck, so a clean pass covered them
-  // all). A render break or a refused request leaves the doorbell open —
-  // re-entry is cheap, unchanged pages hash-skip.
+  // all). A render break, a refused request or a DEFERRED page (unattempted,
+  // fix-audit D2) leaves the doorbell open — re-entry is cheap, unchanged
+  // pages hash-skip.
   if (
     doorbell &&
     listOk &&
@@ -2411,6 +2455,7 @@ const resumePdfVision = async (
     rr.lockSkipped.length === 0 &&
     !rr.renderAborted &&
     !rr.interrupted &&
+    rr.unattempted === 0 &&
     rr.failed.length === 0
   ) {
     await settleDoorbell();
@@ -2454,6 +2499,10 @@ export const readPdf = async (
     // v0.92.1: ephemeral OFF-doc marking — ONLY for a genuinely Off doc
     // (never derived from offOk; see readNotePages' eph contract).
     eph?: boolean;
+    // Fix-audit 2026-08-16 (D1): USER-INITIATED read (sync / chat / Library
+    // tap) — the invocation just refreshed the host hint, so the resume pass
+    // may repair baseline-less missing pages for the on-screen doc.
+    attended?: boolean;
   },
 ): Promise<ReadOutcome> => {
   if (await offRefused(pdfPath, opts?.offOk)) {
@@ -2524,6 +2573,7 @@ export const readPdf = async (
           signal: opts?.signal,
           eph: opts?.eph === true,
           markSize,
+          attended: opts?.attended === true,
         });
       }
       // Option A #3 (2026-07-29): with the native file POST, the PDF bytes are
@@ -2567,6 +2617,7 @@ export const readPdf = async (
           signal: opts?.signal,
           eph: opts?.eph === true,
           markSize,
+          attended: opts?.attended === true,
         });
       }
       b64 = bytesToBase64(new Uint8Array(buf));

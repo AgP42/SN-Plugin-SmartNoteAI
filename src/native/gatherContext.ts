@@ -253,7 +253,8 @@ export const gatherContext = async (
           await opts.freshPdfVisionSystem(),
           notePath,
           // offOk: consent + ephemeral wipe handled by this flow.
-          {signal: opts.signal, offOk: true, eph: opts.isOff},
+          // attended: a chat send is user-initiated — hint just refreshed.
+          {signal: opts.signal, offOk: true, eph: opts.isOff, attended: true},
         );
         // Same C1 rule as the note branch: wipe what was written, never
         // a fallback selection. A hash-match early return wrote nothing.

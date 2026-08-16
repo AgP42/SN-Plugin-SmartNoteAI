@@ -1566,7 +1566,7 @@ function LibraryScreen({
               apiKey,
               assemblePdfVisionPrompt(promptBlocks),
               path,
-              {},
+              {attended: true}, // Library tap — user-initiated
             ).catch(() => {});
           }
         }
