@@ -35,7 +35,11 @@ import {
 } from './src/ui/panelConfig';
 import {readSettings, type Settings} from './src/native/settings';
 import {subscribeLassoSeed} from './src/native/lassoSeed';
-import {consumeOverlayView, type OverlayView} from './src/native/overlayView';
+import {
+  consumeOverlayView,
+  subscribeOverlayView,
+  type OverlayView,
+} from './src/native/overlayView';
 import {setNavIntent} from './src/native/navIntent';
 import {setLibTargetIntent} from './src/native/libTargetIntent';
 import {captureBridge} from './src/native/captureBridge';
@@ -85,6 +89,10 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   const pos = useRef({x: openGeo.x, y: openGeo.y});
   const size = useRef({w: openGeo.w, h: openGeo.h});
 
+  // Live value for the subscription below (state is stale in its closure).
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
   const goChat = useCallback(() => {
     pos.current = {x: PANEL.x, y: PANEL.y};
     size.current = {w: PANEL.width, h: PANEL.height};
@@ -113,6 +121,25 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
     ov && ov.resize && ov.resize(m.width, m.height);
     setView('menu');
   }, [ov]);
+
+  // v1.0.27 (device report, A5X): the toolbar menu tap while this window is
+  // ALREADY open reaches the live overlay here (native open() keeps the
+  // window — "ALREADY_OPEN" — and setOverlayView now notifies). Switch in
+  // place, exactly like the panel's own "≡ Menu" button. Same-view events
+  // are ignored so a lasso fired over an open chat never re-docks a window
+  // the user has moved.
+  useEffect(() => {
+    return subscribeOverlayView(v => {
+      if (v === viewRef.current) {
+        return;
+      }
+      if (v === 'menu') {
+        goMenu();
+      } else {
+        goChat();
+      }
+    });
+  }, [goMenu, goChat]);
 
   // Open a hosted view (Library / config) from the menu overlay, optionally
   // deep-linking a doc/page, then close the overlay. The hosted view is a
