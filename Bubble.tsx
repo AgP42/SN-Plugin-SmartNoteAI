@@ -88,6 +88,14 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   })();
   const pos = useRef({x: openGeo.x, y: openGeo.y});
   const size = useRef({w: openGeo.w, h: openGeo.h});
+  // v1.0.29 (device screenshot, Manta): the panel content sometimes laid out
+  // on a STALE window size after a native resize (menu↔chat switch, snap) —
+  // context chips clipped under the header, an empty stretched column. The
+  // refs above never re-render React, and the ReactRootView's own measure
+  // propagation lost the race on e-ink. This STATE mirrors every size change
+  // and gives the root container an EXPLICIT width/height, so yoga always
+  // lays out for the size we just asked the window to be.
+  const [winSize, setWinSize] = useState({w: openGeo.w, h: openGeo.h});
 
   // Live value for the subscription below (state is stale in its closure).
   const viewRef = useRef(view);
@@ -96,6 +104,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   const goChat = useCallback(() => {
     pos.current = {x: PANEL.x, y: PANEL.y};
     size.current = {w: PANEL.width, h: PANEL.height};
+    setWinSize({w: PANEL.width, h: PANEL.height});
     ov && ov.move && ov.move(PANEL.x, PANEL.y);
     ov && ov.resize && ov.resize(PANEL.width, PANEL.height);
     setView('chat');
@@ -117,6 +126,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
     const o = menuOrigin(sw, sh, toolbarSide.current, m.width, m.height);
     pos.current = {x: o.x, y: o.y};
     size.current = {w: m.width, h: m.height};
+    setWinSize({w: m.width, h: m.height});
     ov && ov.move && ov.move(o.x, o.y);
     ov && ov.resize && ov.resize(m.width, m.height);
     setView('menu');
@@ -277,6 +287,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       return;
     }
     if (mode === 'collapsed') {
+      setWinSize({w: COLLAPSED, h: COLLAPSED});
       ov.resize && ov.resize(COLLAPSED, COLLAPSED);
       ov.move && ov.move(pos.current.x, pos.current.y);
     } else {
@@ -289,6 +300,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
         size.current.h,
       );
       ov.move && ov.move(pos.current.x, pos.current.y);
+      setWinSize({w: size.current.w, h: size.current.h});
       ov.resize && ov.resize(size.current.w, size.current.h);
     }
   }, [mode, ov]);
@@ -314,6 +326,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       if (kind === 'default') {
         pos.current = {x: PANEL.x, y: PANEL.y};
         size.current = {w: PANEL.width, h: PANEL.height};
+        setWinSize({w: PANEL.width, h: PANEL.height});
         ov.move && ov.move(PANEL.x, PANEL.y);
         ov.resize && ov.resize(PANEL.width, PANEL.height);
         return;
@@ -368,6 +381,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       ny = Math.max(0, Math.min(ny, h - nh));
       pos.current = {x: nx, y: ny};
       size.current = {w: nw, h: nh};
+      setWinSize({w: nw, h: nh});
       ov.move && ov.move(nx, ny);
       ov.resize && ov.resize(nw, nh);
     },
@@ -418,6 +432,9 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
           size.current.w + g.dx,
           size.current.h + g.dy,
         );
+        // State on RELEASE only: re-rendering the panel at drag cadence is
+        // too heavy for e-ink; the content settles to the final size here.
+        setWinSize({w: size.current.w, h: size.current.h});
         ov && ov.resize && ov.resize(size.current.w, size.current.h);
       },
     }),
@@ -478,7 +495,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // panel now stays mounted-but-hidden while the menu shows.
   const inMenu = view === 'menu';
   return (
-    <View style={styles.fill}>
+    <View style={[styles.fill, {width: winSize.w, height: winSize.h}]}>
       {inMenu ? (
         <MenuScreen
           scale={1}
