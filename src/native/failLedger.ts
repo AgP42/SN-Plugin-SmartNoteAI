@@ -61,6 +61,21 @@ export const failCapped = (
 
 export const failCap = (kind: FailKind): number => CAPS[kind];
 
+// Sweep every page of one document for one kind (fix-audit lot-3 #1): an
+// explicit Sync is the user's proof they want to spend again — it re-arms
+// the per-page 'vision' backoff of the synced doc, exactly like the
+// uncapped resume used to retry those pages on every Sync. Key format is
+// `kind:path` or `kind:path#page`, so the prefix match cannot cross paths.
+export const clearFailuresFor = (kind: FailKind, path: string): void => {
+  const exact = `${kind}:${path}`;
+  const prefix = `${exact}#`;
+  for (const k of [...fails.keys()]) {
+    if (k === exact || k.startsWith(prefix)) {
+      fails.delete(k);
+    }
+  }
+};
+
 // Tests only: a fresh session.
 export const __resetFailLedgerForTests = (): void => {
   fails.clear();

@@ -1779,3 +1779,37 @@ it('resume pass: a vision-capped page is not re-billed and holds the doorbell', 
   expect(getPage(storeState.store, PDF, 0)!.source).toBe('mistral-ocr');
   expect(storeState.store.docs[PDF]!.markSz).toBe(41); // doorbell HELD open
 });
+
+// Fix-audit lot-3 #0: a PAID OCR that parses to zero pages is a FAILURE at
+// the source (ok:false) — the tick's doc counter keys on ok alone, so a
+// successful covered no-op can never park a healthy document again.
+it('readPdf: OCR parsing to 0 pages returns ok:false (paid, nothing stored)', async () => {
+  const nt = jest.requireMock('./noteTranscripts') as {readFileSize: jest.Mock};
+  nt.readFileSize.mockImplementation(async () => 5);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = jest.fn(async () => ({
+    ok: true,
+    arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5]).buffer,
+  })) as unknown as typeof fetch;
+  route({ocr: () => jsonRes({pages: []})});
+  const r = await readPdf(baseDeps(), 'key', 'SYS', PDF);
+  globalThis.fetch = realFetch;
+  expect(r.ok).toBe(false);
+  expect(String((r as {reason?: string}).reason)).toContain('no readable pages');
+  expect(getDocHash(storeState.store, PDF)).toBe(''); // nothing stamped
+});
+
+// Fix-audit lot-3 #2: an explicit Redo that stores clears the page's vision
+// backoff — the page it just proved readable is reachable again.
+it('readPdfPageVision success clears the vision fail ledger for that page', async () => {
+  upsertPage(storeState.store, PDF, 0, entry('', {text: 'ocr'}), 1);
+  storeState.store.docs[PDF]!.docHash = '123';
+  noteFailure('vision', PDF, 0);
+  noteFailure('vision', PDF, 0);
+  noteFailure('vision', PDF, 0); // capped
+  route({chat: () => chatRes('fresh redo text')});
+  const out = await readPdfPageVision(baseDeps(), 'key', 'SYS', PDF, 0);
+  expect(out.ok).toBe(true);
+  const {failCount} = jest.requireActual('./failLedger') as typeof import('./failLedger');
+  expect(failCount('vision', PDF, 0)).toBe(0);
+});

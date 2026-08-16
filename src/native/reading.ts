@@ -1875,6 +1875,10 @@ export const readPdfPageVision = async (
           markDocTouched(pdfPath);
         });
       }
+      // Fix-audit lot-3 #2: the explicit Redo is the third payer — a page it
+      // just PROVED readable must not stay vision-capped for the session
+      // (a later doorbell recheck of this very page was starved).
+      clearFailure('vision', pdfPath, page);
       // A PAID write must reach disk NOW (audit 3 #4, and the rule stated
       // at upsertTranscript): every automatic caller flushes after its
       // pass, this manual one rode the 800 ms debounce alone — and RN
@@ -2766,6 +2770,18 @@ export const readPdf = async (
       '[SmartNoteAI.read]',
       'ocr returned 0 parseable PDF pages — docHash NOT stamped (will retry)',
     );
+    // Fix-audit lot-3 #0 (2026-08-16): this is a PAID call that stored
+    // nothing and stamped nothing — the next tick would repeat it. Say so as
+    // a FAILURE here, at the source, so the tick's doc-failure counter can
+    // key on ok:false alone: a SUCCESSFUL no-op (covered resume with all
+    // pages cap-deferred or hash-skipped) used to be indistinguishable from
+    // this and parked whole documents that were perfectly fine.
+    return {
+      ok: false,
+      read: 0,
+      failed: [],
+      reason: 'OCR returned no readable pages (will retry)',
+    };
   }
   // Vision on EVERY page (like a note): reuses each page's stored OCR as the
   // hint and skips the paid OCR. Interrupted/failed pages stay 'mistral-ocr'

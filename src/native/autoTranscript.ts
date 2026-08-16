@@ -18,6 +18,7 @@ import {folderEvidence} from './renameFollow';
 import {
   noteFailure,
   clearFailure,
+  clearFailuresFor,
   failCapped,
   failCap,
 } from './failLedger';
@@ -840,6 +841,10 @@ export const autoTranscriptTick = async (
         // wants to spend again.
         if (opts?.trigger === 'sync' || opts?.force === true) {
           clearFailure('doc', notePath);
+          // Fix-audit lot-3 #1: the tap also re-arms the per-page vision
+          // backoff of THIS doc — capped pages become reachable again,
+          // exactly what the parking message promises.
+          clearFailuresFor('vision', notePath);
         }
         // Give up on a document that keeps failing, instead of paying for
         // the same doomed whole-file OCR at every tick (release audit).
@@ -863,12 +868,14 @@ export const autoTranscriptTick = async (
           failed: [] as number[],
           reason: 'read threw',
         }));
-        // ok:true with read 0 counts too: a whole-file OCR that parses to
-        // ZERO pages is a PAID call that stores nothing and stamps no
-        // docHash, so the next tick repeats it — one of the two triggers
-        // the original finding described, and the first counter missed it
-        // (verification pass 2026-08-12).
-        if (r.read === 0) {
+        // Count FAILURES only (fix-audit lot-3 #0). The old `read === 0`
+        // test also caught the paid-but-empty OCR (verification pass
+        // 2026-08-12) — that case now returns ok:false from readPdf itself —
+        // but it ALSO counted every SUCCESSFUL no-op (a covered resume with
+        // its pages cap-deferred or hash-skipped) as a doc failure: three
+        // quiet ticks parked a perfectly healthy PDF, and Sync could never
+        // unpark it (the no-op repeated, the counter refilled).
+        if (!r.ok) {
           // Nothing was stored and no docHash was stamped, so the next tick
           // would try the identical call. Count it, and SAY why — the
           // Library used to report "nothing new" while the bill grew.
@@ -882,8 +889,8 @@ export const autoTranscriptTick = async (
             `${name}: PDF read failed (${n}/${failCap('doc')}) — ` +
               `${(r as {reason?: string}).reason ?? 'no reason given'}`,
           );
-        } else if (r.read > 0) {
-          clearFailure('doc', notePath); // progress clears the backoff
+        } else {
+          clearFailure('doc', notePath); // success — even a no-op — clears it
         }
         pagesRead += r.read;
         if (r.read > 0 && target.mode === 'auto') {

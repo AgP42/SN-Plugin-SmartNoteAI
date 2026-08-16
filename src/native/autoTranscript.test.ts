@@ -923,3 +923,34 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
   });
 });
 
+
+describe('doc-failure counting (fix-audit lot-3, 2026-08-16)', () => {
+  const PDFT = '/Note/tracked.pdf';
+
+  it('a SUCCESSFUL no-op read (ok, 0 pages) never parks the document', async () => {
+    settingsMock.mockResolvedValue({autoTargets: {[PDFT]: {mode: 'auto'}}});
+    fileSizeMock.mockResolvedValue(500); // uncovered → readPdf runs each tick
+    readPdfMock.mockResolvedValue({ok: true, read: 0, failed: []});
+    for (let i = 0; i < 5; i++) {
+      nowMs += 60_000;
+      await autoTranscriptTick(deps(), {force: true, trigger: 'sync'});
+    }
+    // Parked would stop calling readPdf after 3 ticks; a healthy no-op never parks.
+    expect(readPdfMock.mock.calls.length).toBe(5);
+  });
+
+  it('an explicit Sync re-arms the per-page vision backoff of the synced doc', async () => {
+    const led = jest.requireActual('./failLedger') as typeof import('./failLedger');
+    led.__resetFailLedgerForTests();
+    led.noteFailure('vision', PDFT, 4);
+    led.noteFailure('vision', PDFT, 4);
+    led.noteFailure('vision', PDFT, 4);
+    expect(led.failCapped('vision', PDFT, 4)).toBe(true);
+    settingsMock.mockResolvedValue({autoTargets: {[PDFT]: {mode: 'auto'}}});
+    fileSizeMock.mockResolvedValue(500);
+    readPdfMock.mockResolvedValue({ok: true, read: 1, failed: []});
+    nowMs += 60_000;
+    await autoTranscriptTick(deps(), {force: true, trigger: 'sync'});
+    expect(led.failCount('vision', PDFT, 4)).toBe(0); // the tap re-armed it
+  });
+});
