@@ -26,7 +26,11 @@ import {
   modelLacksTools,
   inputPriceEurPerM,
 } from '../src/core/model/catalog';
-import {DEFAULT_SYSTEM} from '../src/core/convo/compose';
+import {
+  DEFAULT_SYSTEM,
+  NO_LIVE_TOOLS_LINE,
+  WEB_TOOL_LINE,
+} from '../src/core/convo/compose';
 import {
   MAX_QUICK_ACTIONS,
   type QuickActionItem,
@@ -226,6 +230,9 @@ function ChatAgentsScreen({
   // blind): any focused field scrolls clear of the soft keyboard.
   const scrollRef = useRef<ScrollView | null>(null);
   const scrollToFocused = useScrollToFocused(scrollRef);
+  // v1.0.34 (coherence with Door 2's "Full prompt" sections): show what the
+  // chat actually sends as its system prompt.
+  const [showChatPrompt, setShowChatPrompt] = useState<boolean>(false);
   // v0.80.0 (audit): text/button-size settings apply here too (shadows the
   // module-level unscaled `styles` that QaEditor keeps using).
   // eslint-disable-next-line @typescript-eslint/no-shadow
@@ -840,6 +847,46 @@ function ChatAgentsScreen({
             btnScale={btnScale}
             onFocus={scrollToFocused}
           />
+          {/* v1.0.34 — same transparency as Door 2's assembled prompts: the
+              REAL system prompt of a chat message, piece by piece. */}
+          <TouchableOpacity onPress={() => setShowChatPrompt(v => !v)}>
+            <Text style={[styles.section, {fontSize: 16 * scale}, styles.gapTop]}>
+              {showChatPrompt ? '▾' : '▸'} Full prompt — what the chat sends
+            </Text>
+          </TouchableOpacity>
+          {showChatPrompt ? (
+            <>
+              <Text style={[styles.manual, mf]}>
+                A chat message's system prompt is assembled from: your
+                Persona above, used AS-IS (empty = no base instructions —
+                nothing is substituted behind your back); when an agent is
+                active, its persona and its documents section instead; when
+                a lasso image is attached, the lasso directive (shown in
+                READ config); and ONE of the two lines below, matching the
+                Web button for THAT message.
+              </Text>
+              <Text style={[styles.label, {fontSize: 13 * scale}]}>
+                Web NOT armed (every normal message):
+              </Text>
+              <View style={styles.qaCard}>
+                <Text style={[styles.manual, mf]} selectable>
+                  {NO_LIVE_TOOLS_LINE.trim()}
+                </Text>
+              </View>
+              <Text style={[styles.label, {fontSize: 13 * scale}]}>
+                Web armed (that one message):
+              </Text>
+              <View style={styles.qaCard}>
+                <Text style={[styles.manual, mf]} selectable>
+                  {WEB_TOOL_LINE.trim()}
+                </Text>
+              </View>
+              <Text style={[styles.modelNote, nf]}>
+                Answers produced by a real web run carry a 🌐 badge; no
+                badge means the answer came from the model's memory.
+              </Text>
+            </>
+          ) : null}
         </>
       ),
     ),

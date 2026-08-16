@@ -133,8 +133,18 @@ Magistral S/M. Any other model works in the free-text field, but the
 smaller ones (Ministral, Nemo) cannot run the connectors.
 
 - **Persona** (optional): shapes how the assistant answers.
-- **Tools**: the model decides on its own, question by question, whether to
-  use them; web answers cite their sources. ≈0.01€ per web search.
+- **Web search** (one-shot button, ≈0.01€ per search): arm it and it
+  applies to your NEXT message only. Answers produced by a real web run
+  carry a **🌐 badge** and cite their sources.
+- **No invented facts**: without Web armed, the assistant is told — for
+  every message — that it has no live data: it will not present remembered
+  knowledge as current, and it never cites or fabricates source links. For
+  time-sensitive questions (weather, news, prices) it asks you to arm Web.
+  No 🌐 badge = the answer came from the model's memory.
+- **Full transparency**: the exact system prompt a chat message sends
+  (persona · agent documents · lasso directive · the per-message tool
+  line) is shown in CHAT & AGENTS under "Full prompt — what the chat
+  sends", like the READ prompts in their own door.
 - **Quick actions**: editable one-tap prompts shown in the panel.
 
 ## SEARCH & the Library
