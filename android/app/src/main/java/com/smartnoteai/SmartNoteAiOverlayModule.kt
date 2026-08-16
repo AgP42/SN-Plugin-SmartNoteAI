@@ -362,6 +362,30 @@ class SmartNoteAiOverlayModule(reactContext: ReactApplicationContext) :
    * Returns `{success, width, height, message}` — same convention as
    * the other methods, so the JS side branches on `success`.
    */
+  // v1.0.31: the size the window ACTUALLY has after layout (the WM may
+  // clamp a request). The JS mirrors its explicit content size from THIS,
+  // never from its own bookkeeping — the ~12px right clip on the Manta was
+  // the difference between the two.
+  @ReactMethod
+  fun getWindowSize(promise: Promise) {
+    UiThreadUtil.runOnUiThread {
+      val v = overlayView
+      if (v == null) {
+        promise.resolve(buildResult(success = false, code = "NOT_OPEN",
+            message = "no overlay window"))
+      } else {
+        // post(): read AFTER the pending layout pass, not the stale values.
+        v.post {
+          val m = Arguments.createMap()
+          m.putBoolean("success", true)
+          m.putInt("width", v.width)
+          m.putInt("height", v.height)
+          promise.resolve(m)
+        }
+      }
+    }
+  }
+
   @ReactMethod
   fun getScreenSize(promise: Promise) {
     val ctx = reactApplicationContext.applicationContext

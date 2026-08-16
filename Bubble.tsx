@@ -97,6 +97,26 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // and gives the root container an EXPLICIT width/height, so yoga always
   // lays out for the size we just asked the window to be.
   const [winSize, setWinSize] = useState({w: openGeo.w, h: openGeo.h});
+  // Correct the mirror with the size the window ACTUALLY got (the WM may
+  // clamp a request — v1.0.31: a ~12px right clip on the Manta was exactly
+  // requested-minus-applied). Called after every resize below; the native
+  // side answers post-layout.
+  const syncWinFromNative = useCallback(async () => {
+    try {
+      const r = await (ov &&
+        (ov as {getWindowSize?: () => Promise<{success?: boolean; width?: number; height?: number}>})
+          .getWindowSize?.());
+      if (r && r.success && r.width && r.height && r.width > 0) {
+        setWinSize(cur =>
+          cur.w === r.width && cur.h === r.height
+            ? cur
+            : {w: r.width!, h: r.height!},
+        );
+      }
+    } catch {
+      // keep the requested mirror
+    }
+  }, [ov]);
 
   // Live value for the subscription below (state is stale in its closure).
   const viewRef = useRef(view);
@@ -109,7 +129,8 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
     ov && ov.move && ov.move(PANEL.x, PANEL.y);
     ov && ov.resize && ov.resize(PANEL.width, PANEL.height);
     setView('chat');
-  }, [ov]);
+    syncWinFromNative();
+  }, [ov, syncWinFromNative]);
 
   const goMenu = useCallback(async () => {
     let sw = screen.current.w;
@@ -131,7 +152,8 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
     ov && ov.move && ov.move(o.x, o.y);
     ov && ov.resize && ov.resize(m.width, m.height);
     setView('menu');
-  }, [ov]);
+    syncWinFromNative();
+  }, [ov, syncWinFromNative]);
 
   // v1.0.27 (device report, A5X): the toolbar menu tap while this window is
   // ALREADY open reaches the live overlay here (native open() keeps the
@@ -291,6 +313,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       setWinSize({w: COLLAPSED, h: COLLAPSED});
       ov.resize && ov.resize(COLLAPSED, COLLAPSED);
       ov.move && ov.move(pos.current.x, pos.current.y);
+      syncWinFromNative();
     } else {
       // Restoring from a bubble parked near an edge: re-clamp for the
       // full panel size so it comes back entirely on-screen.
@@ -303,8 +326,9 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       ov.move && ov.move(pos.current.x, pos.current.y);
       setWinSize({w: size.current.w, h: size.current.h});
       ov.resize && ov.resize(size.current.w, size.current.h);
+      syncWinFromNative();
     }
-  }, [mode, ov]);
+  }, [mode, ov, syncWinFromNative]);
 
   // A lasso can be fired while the panel is COLLAPSED to a bubble (the
   // window stays open and this component mounted). The seed then reaches
@@ -318,6 +342,13 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
   // to the full panel.
   useEffect(() => subscribeLassoSeed(() => setMode('normal')), []);
 
+  // Mount: the fresh window may differ from the openGeo fallbacks (index.js
+  // opened it with live screen numbers) — mirror reality once.
+  useEffect(() => {
+    syncWinFromNative();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const snap = useCallback(
     async (kind: SnapKind) => {
       if (!ov) {
@@ -330,6 +361,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
         setWinSize({w: PANEL.width, h: PANEL.height});
         ov.move && ov.move(PANEL.x, PANEL.y);
         ov.resize && ov.resize(PANEL.width, PANEL.height);
+        syncWinFromNative();
         return;
       }
       let w = FALLBACK_W;
@@ -385,8 +417,9 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
       setWinSize({w: nw, h: nh});
       ov.move && ov.move(nx, ny);
       ov.resize && ov.resize(nw, nh);
+      syncWinFromNative();
     },
-    [ov],
+    [ov, syncWinFromNative],
   );
 
   const dragPan = useRef(
@@ -437,6 +470,7 @@ export default function SmartNoteAiBubble(): React.JSX.Element {
         // too heavy for e-ink; the content settles to the final size here.
         setWinSize({w: size.current.w, h: size.current.h});
         ov && ov.resize && ov.resize(size.current.w, size.current.h);
+        syncWinFromNative();
       },
     }),
   ).current;
