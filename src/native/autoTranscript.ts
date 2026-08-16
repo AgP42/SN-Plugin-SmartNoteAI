@@ -725,10 +725,19 @@ export const autoTranscriptTick = async (
         console.log('[SmartNoteAI.auto]', 'tick stopped by user');
         break;
       }
-      // A foreground chat send started mid-tick → yield the rate budget to it
-      // (finish the current note first; the rest re-pokes when the send ends).
-      if (isForegroundBusy()) {
-        console.log('[SmartNoteAI.auto]', 'tick yielding to a chat send');
+      // A foreground action started mid-tick → yield the rate budget to it
+      // (finish the current note first; the rest re-pokes when it ends).
+      // FORCED ticks are exempt (regression audit 2026-08-16, 3/3): an
+      // explicit Sync now is ITSELF a foreground action — breaking here
+      // reported "Synced: N page(s)" for a silently truncated pass, and
+      // the foreground-done poke resumes as 'background', which never
+      // pays for Manual targets. Same exemption as the top-of-tick gate;
+      // two user actions at once just share the 429-throttled budget.
+      if (isForegroundBusy() && !opts?.force) {
+        console.log(
+          '[SmartNoteAI.auto]',
+          'tick yielding to a foreground action',
+        );
         break;
       }
       setActivity({

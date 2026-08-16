@@ -11,6 +11,7 @@
 import type {CaptureDeps} from './capture';
 import {
   autoTranscriptTick,
+  setForegroundBusy,
   recordOwed,
   MAX_PAGES_PER_TICK,
   getLastSyncAt,
@@ -224,6 +225,34 @@ describe('autoTranscriptTick scheduling', () => {
     expect(out).toEqual({ran: false, notesChecked: 0, pagesRead: 0});
     expect(needMock).not.toHaveBeenCalled();
     expect(readMock).not.toHaveBeenCalled();
+  });
+
+  // Regression audit 2026-08-16 (3/3 upheld): once the Library's paid
+  // reads started raising foregroundBusy (lot C), the mid-loop yield was
+  // silently TRUNCATING an explicit Sync now — "Synced: N page(s)" for a
+  // partial pass, and the foreground-done poke resumes as 'background',
+  // which never pays for Manual targets. Forced ticks are now exempt
+  // from BOTH foreground gates (top + mid-loop), like the user's other
+  // bypasses; two user actions just share the throttled rate budget.
+  it('foregroundBusy holds a background tick; a forced Sync now still runs in full', async () => {
+    settingsMock.mockResolvedValue({autoTargets: {[NOTE]: {mode: 'manual'}}});
+    needMock.mockResolvedValue([0]);
+    readMock.mockResolvedValue({ok: true, read: 1, failed: []});
+    setForegroundBusy(true);
+    try {
+      const bg = await autoTranscriptTick(deps());
+      expect(bg.ran).toBe(false); // top gate: the drain waits its turn
+      expect(readMock).not.toHaveBeenCalled();
+      const sync = await autoTranscriptTick(deps(), {
+        force: true,
+        trigger: 'sync',
+      });
+      expect(sync.ran).toBe(true);
+      expect(sync.notesChecked).toBe(1); // NOT cut short by the mid-loop yield
+      expect(readMock).toHaveBeenCalled(); // the explicit paid pass really ran
+    } finally {
+      setForegroundBusy(false);
+    }
   });
 
   it("trigger 'background' skips manual targets; 'sync' includes them", async () => {

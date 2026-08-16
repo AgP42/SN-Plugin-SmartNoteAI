@@ -424,6 +424,9 @@ export default function ChatPanel({
   const [contextSent, setContextSent] = useState<boolean>(false);
   // The actual model version the API served (resolves 'latest' aliases).
   const [resolvedModel, setResolvedModel] = useState<string>('');
+  // Live mirror of effectiveModel for the async response handler: only a
+  // response sent with the STILL-current model may record its resolution.
+  const effModelRef = useRef<string>('');
   const [refreshing, setRefreshing] = useState<boolean>(false);
   // Scroll anchoring: after a send, keep the user's last message at the
   // top of the viewport (clamped to the end) so the answer reads from
@@ -1358,7 +1361,12 @@ export default function ChatPanel({
         ) {
           setContextSent(true);
         }
-        if (r.ok && r.modelId) {
+        // Same guard family as setContextSent above (regression audit
+        // 2026-08-16, 3/3): a response landing AFTER a model/agent switch
+        // must not re-install its resolution — the clear-on-switch effect
+        // already wiped it, and this write would pair the OLD served id
+        // with the NEW configured model.
+        if (r.ok && r.modelId && cfg.model === effModelRef.current) {
           setResolvedModel(r.modelId);
         }
         if (r.ok) {
@@ -2220,7 +2228,10 @@ export default function ChatPanel({
       : model) || DEFAULT_MODEL;
   // Lot C (c): the resolution belongs to the model that SERVED it — a
   // model/agent switch must not pair the new id with the old answer.
+  // The ref is the live mirror the async response handler checks before
+  // writing (the state clear alone loses the race to an in-flight send).
   useEffect(() => {
+    effModelRef.current = effectiveModel;
     setResolvedModel('');
   }, [effectiveModel]);
   useEffect(() => {
