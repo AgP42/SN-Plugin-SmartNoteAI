@@ -732,59 +732,6 @@ const copyPdfDoc = (
   return true;
 };
 
-// A RENAMED PDF changes its basename, so the adoption above can never
-// match it and the whole already-paid document was re-OCR'd and
-// re-Visioned from scratch (2026-08-10). The identity that survives a
-// rename is the printed byte length, which is far too weak on its own —
-// so this only lists CANDIDATES, in the same folder, and the caller must
-// prove the file is really gone before adopting from it. If more than one
-// candidate survives that proof, the caller must refuse: showing another
-// document's text would be much worse than paying again.
-export const pdfRenameCandidates = (
-  store: Store,
-  pdfPath: string,
-  byteLen: number,
-): string[] => {
-  if (byteLen <= 0 || !/\.pdf$/i.test(pdfPath)) {
-    return [];
-  }
-  const cut = pdfPath.lastIndexOf('/');
-  const dir = cut <= 0 ? '' : pdfPath.slice(0, cut);
-  const hash = String(byteLen);
-  return Object.entries(store.docs)
-    .filter(
-      ([dp, doc]) =>
-        dp !== pdfPath &&
-        /\.pdf$/i.test(dp) &&
-        dp.slice(0, dp.lastIndexOf('/')) === dir &&
-        bytesPrefix(doc) === hash &&
-        Object.values(doc.pages).some(e => e.eph !== true),
-    )
-    .map(([dp]) => dp);
-};
-
-// Adopt from ONE donor the caller has proven gone (see pdfRenameCandidates).
-export const adoptRenamedPdfDoc = (
-  store: Store,
-  donorPath: string,
-  pdfPath: string,
-  byteLen: number,
-  now: number,
-): boolean => {
-  const cur = store.docs[pdfPath];
-  if (
-    cur !== undefined &&
-    (cur.lock === true ||
-      cur.docHash.length > 0 ||
-      Object.values(cur.pages).some(
-        e => e.text.trim().length > 0 || e.lock === true,
-      ))
-  ) {
-    return false; // same protection as the same-name adoption
-  }
-  return copyPdfDoc(store, donorPath, pdfPath, byteLen, now);
-};
-
 // Realign a .note doc's entries to the CURRENT page order (pageIds[i] =
 // PAGEID of today's page i). Identity-keyed entries follow their page;
 // entries whose page no longer exists are dropped; legacy entries

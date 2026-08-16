@@ -76,8 +76,6 @@ import {
   buildPageIdDonors,
   soleDonorDoc,
   adoptPdfDoc,
-  pdfRenameCandidates,
-  adoptRenamedPdfDoc,
   visionSettled,
   setPdfPageCount,
   pdfMissingPages,
@@ -2416,44 +2414,13 @@ export const readPdf = async (
             `${pdfPath.split('/').pop()}: transcripts adopted by identity ` +
               '(moved/copied PDF — not re-billed)',
           );
-        } else {
-          // RENAMED PDF (2026-08-10): the basename changed, so the adoption
-          // above can never match and the whole already-paid document was
-          // re-OCR'd from scratch. The only identity that survives a rename
-          // is the printed byte length — far too weak alone, so we demand:
-          // same folder, the donor's file PROVEN gone, and EXACTLY ONE such
-          // candidate. Two candidates and we pay again rather than risk
-          // showing another document's text.
-          const cands = pdfRenameCandidates(store, pdfPath, byteLen);
-          const gone: string[] = [];
-          for (const c of cands) {
-            if (await provenGone(c)) {
-              gone.push(c);
-            }
-          }
-          if (gone.length === 1) {
-            const donor = gone[0];
-            let took = false;
-            await mutateStore(s => {
-              took = adoptRenamedPdfDoc(s, donor, pdfPath, byteLen, Date.now());
-              return took;
-            });
-            if (took) {
-              console.log(
-                '[SmartNoteAI.read]',
-                `${pdfPath.split('/').pop()}: transcripts adopted from ` +
-                  `${donor.split('/').pop()} (renamed PDF — not re-billed)`,
-              );
-              await followRename(donor, pdfPath);
-            }
-          } else if (gone.length > 1) {
-            console.log(
-              '[SmartNoteAI.read]',
-              `${pdfPath.split('/').pop()}: ${gone.length} possible renamed ` +
-                'donors — refusing to guess, reading it fresh',
-            );
-          }
         }
+        // The bytes-only RENAMED-PDF inference that lived here (2026-08-10 →
+        // 2026-08-16) was dropped by owner decision in the simplification
+        // audit: the weakest identity in the store ("far too weak alone" by
+        // its own admission), ~100 lines of guarded guessing, against a
+        // bounded cost — a renamed PDF re-pays its read once (~0.4 ¢/page).
+        // Same-name adoption above (name+bytes, safe) stays.
       }
       if (
         !opts?.force &&
