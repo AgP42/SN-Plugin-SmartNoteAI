@@ -58,6 +58,19 @@ function MdTable({
     <ScrollView
       horizontal
       style={{marginBottom: gap, height: h}}
+      onLayout={e => {
+        // Diagnostic (v1.0.41): the ONE unmeasured box in round 2 — the
+        // pin says the inner table is 322dp, the turn stays ~6200dp, and
+        // nothing watched the ScrollView BETWEEN them. If this logs huge
+        // AFTER the pin landed, the height style is being ignored.
+        const sh = e.nativeEvent.layout.height;
+        if (sh > 800) {
+          console.log(
+            '[SmartNoteAI.md]',
+            `table SCROLLVIEW height ${Math.round(sh)}dp (pin=${h ?? '∅'})`,
+          );
+        }
+      }}
       showsHorizontalScrollIndicator>
       {/* v1.0.38 (device repro 2026-08-17, "giant void under a .md
           table"): the pin follows the TABLE's own onLayout, no longer the
@@ -410,7 +423,19 @@ function MarkdownView(props: Props): React.JSX.Element {
     }
   };
 
-  return <View>{blocks.map(renderBlock)}</View>;
+  return (
+    <View
+      onLayout={e => {
+        // Diagnostic (v1.0.41): the markdown ROOT — tells whether the
+        // phantom height lives inside the markdown tree or in the bubble.
+        const rh = e.nativeEvent.layout.height;
+        if (rh > 800) {
+          console.log('[SmartNoteAI.md]', `md-root height ${Math.round(rh)}dp`);
+        }
+      }}>
+      {blocks.map(renderBlock)}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
