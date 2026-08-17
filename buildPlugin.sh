@@ -714,10 +714,19 @@ main() {
         all_pkgs="$(printf "%s\n%s\n" "$project_react_pkgs" "$autolink_pkgs" | awk 'NF' | sort -u)"
         update_plugin_config_packages "$project_root" "$gen_dir" "$all_pkgs"
 
+        # HARD GATE (2026-08-17): a plugin WITH reactPackages but whose APK
+        # step fails must NOT ship — the zip would carry a stale app.npk and
+        # a config with NO nativeCodePackage, so PluginHost loads the JS with
+        # every NativeModule null (shipped once as v1.0.37: plugin "dead" on
+        # device). Fail the whole build instead.
         if build_android_apk "$project_root" "$gen_cfg"; then
-            copy_apk_and_update_config "$project_root" "$gen_dir" "$gen_cfg" || true
+            copy_apk_and_update_config "$project_root" "$gen_dir" "$gen_cfg" || {
+                write_color_output "nativeCodePackage step failed — ABORTING" "Red"
+                exit 1
+            }
         else
-            write_color_output "APK build failed" "Red"
+            write_color_output "APK build failed — ABORTING (package would ship without native code)" "Red"
+            exit 1
         fi
     else
         write_color_output "Build conditions not met; skipping native build and reactPackages update" "Yellow"
