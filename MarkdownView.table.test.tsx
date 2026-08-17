@@ -33,9 +33,17 @@ describe('MdTable height pin', () => {
   };
   const tableScroll = (r: ReactTestRenderer) =>
     r.root.findAllByType(ScrollView).find(s => s.props.horizontal === true)!;
+  // v1.0.42: the pinned height lives on the WRAPPER View around the
+  // ScrollView (the device proved the runtime ignores a height style on
+  // the ScrollView itself) — measure that wrapper.
+  const wrapper = (r: ReactTestRenderer) => tableScroll(r).parent!;
   const layTable = (r: ReactTestRenderer, height: number): void => {
-    // The inner table View is the horizontal ScrollView's direct child.
-    const inner = tableScroll(r).props.children;
+    // The inner table View is the horizontal ScrollView's direct child
+    // (skip the comment/diagnostic nodes: take the one with onLayout).
+    const kids = tableScroll(r).props.children;
+    const inner = (Array.isArray(kids) ? kids : [kids]).find(
+      (c: {props?: {onLayout?: unknown}}) => c?.props?.onLayout,
+    );
     act(() => {
       inner.props.onLayout({nativeEvent: {layout: {height}}});
     });
@@ -51,14 +59,18 @@ describe('MdTable height pin', () => {
 
   it('height follows the table onLayout — and SHRINKS back (poison heals)', () => {
     const r = render();
-    expect(flatHeight(tableScroll(r).props.style)).toBeUndefined(); // pre-measure
+    expect(flatHeight(wrapper(r).props.style)).toBeUndefined(); // pre-measure
     layTable(r, 120);
-    expect(flatHeight(tableScroll(r).props.style)).toBe(120);
+    expect(flatHeight(wrapper(r).props.style)).toBe(120);
+    // The wrapper CLAMPS (overflow hidden): whatever the ScrollView
+    // believes, layout ends at the pin — the device-proven quirk is
+    // that the ScrollView ignores its own height style.
+    expect(wrapper(r).props.style.overflow).toBe('hidden');
     // A pathological stretched pass pinned a giant frame…
     layTable(r, 4000);
-    expect(flatHeight(tableScroll(r).props.style)).toBe(4000);
+    expect(flatHeight(wrapper(r).props.style)).toBe(4000);
     // …and the next REAL pass heals it (the old grow-only pin never did).
     layTable(r, 120);
-    expect(flatHeight(tableScroll(r).props.style)).toBe(120);
+    expect(flatHeight(wrapper(r).props.style)).toBe(120);
   });
 });

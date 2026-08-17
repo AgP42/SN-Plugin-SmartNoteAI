@@ -55,24 +55,32 @@ function MdTable({
   };
   const rowStyle = {flexDirection: 'row' as const};
   return (
-    <ScrollView
-      horizontal
-      style={{marginBottom: gap, height: h}}
-      onLayout={e => {
-        // Diagnostic (v1.0.41): the ONE unmeasured box in round 2 — the
-        // pin says the inner table is 322dp, the turn stays ~6200dp, and
-        // nothing watched the ScrollView BETWEEN them. If this logs huge
-        // AFTER the pin landed, the height style is being ignored.
-        const sh = e.nativeEvent.layout.height;
-        if (sh > 800) {
-          console.log(
-            '[SmartNoteAI.md]',
-            `table SCROLLVIEW height ${Math.round(sh)}dp (pin=${h ?? '∅'})`,
-          );
-        }
-      }}
-      showsHorizontalScrollIndicator>
-      {/* v1.0.38 (device repro 2026-08-17, "giant void under a .md
+    // v1.0.42 — THE verdict of the sensor hunt (device, 3 rounds): with
+    // the pin landed at 321.6dp the ScrollView still laid out at 5431dp —
+    // this runtime IGNORES a height style on a horizontal ScrollView
+    // nested in the chat's vertical scroll (the v0.78.3 balloon wins the
+    // measure pass). A plain View's height is authoritative in Yoga, so
+    // the pin now lives on this WRAPPER, overflow hidden: whatever the
+    // ScrollView believes its size is, the layout — and the void — end
+    // at the real table height.
+    <View style={{marginBottom: gap, height: h, overflow: 'hidden'}}>
+      <ScrollView
+        horizontal
+        onLayout={e => {
+          // Diagnostic (v1.0.41): the ONE unmeasured box in round 2 — the
+          // pin says the inner table is 322dp, the turn stays ~6200dp, and
+          // nothing watched the ScrollView BETWEEN them. If this logs huge
+          // AFTER the pin landed, the height style is being ignored.
+          const sh = e.nativeEvent.layout.height;
+          if (sh > 800) {
+            console.log(
+              '[SmartNoteAI.md]',
+              `table SCROLLVIEW height ${Math.round(sh)}dp (pin=${h ?? '∅'})`,
+            );
+          }
+        }}
+        showsHorizontalScrollIndicator>
+        {/* v1.0.38 (device repro 2026-08-17, "giant void under a .md
           table"): the pin follows the TABLE's own onLayout, no longer the
           scroll view's contentSize. On the add-a-turn re-measure pass the
           nested horizontal ScrollView can be given the OUTER chat's whole
@@ -87,50 +95,51 @@ function MdTable({
           frame heal instead of ratcheting. Setting the scroll view's
           height does not change the flex-start child's height, so this
           cannot feedback-loop. */}
-      <View
-        style={styles.table}
-        onLayout={e => {
-          const lh = e.nativeEvent.layout.height;
-          if (lh > 0) {
-            setH(prev => {
-              if (prev === lh) {
-                return prev;
-              }
-              // Diagnostic (v1.0.39, giant-void hunt): every pin move,
-              // with the table's shape — structure only, never content.
-              console.log(
-                '[SmartNoteAI.md]',
-                `table pin ${prev ?? '∅'} → ${Math.round(lh)} ` +
-                  `(${rows.length + 1}x${cols})`,
-              );
-              return lh;
-            });
-          }
-        }}>
-        <View style={rowStyle}>
-          {pad(header).map((c, ci) => (
-            <Text
-              key={ci}
-              selectable={selectable}
-              style={[styles.tableCell, cell, {fontWeight: '700'}]}>
-              {c}
-            </Text>
-          ))}
-        </View>
-        {rows.map((row, ri) => (
-          <View key={ri} style={rowStyle}>
-            {pad(row).map((c, ci) => (
+        <View
+          style={styles.table}
+          onLayout={e => {
+            const lh = e.nativeEvent.layout.height;
+            if (lh > 0) {
+              setH(prev => {
+                if (prev === lh) {
+                  return prev;
+                }
+                // Diagnostic (v1.0.39, giant-void hunt): every pin move,
+                // with the table's shape — structure only, never content.
+                console.log(
+                  '[SmartNoteAI.md]',
+                  `table pin ${prev ?? '∅'} → ${Math.round(lh)} ` +
+                    `(${rows.length + 1}x${cols})`,
+                );
+                return lh;
+              });
+            }
+          }}>
+          <View style={rowStyle}>
+            {pad(header).map((c, ci) => (
               <Text
                 key={ci}
                 selectable={selectable}
-                style={[styles.tableCell, cell]}>
+                style={[styles.tableCell, cell, {fontWeight: '700'}]}>
                 {c}
               </Text>
             ))}
           </View>
-        ))}
-      </View>
-    </ScrollView>
+          {rows.map((row, ri) => (
+            <View key={ri} style={rowStyle}>
+              {pad(row).map((c, ci) => (
+                <Text
+                  key={ci}
+                  selectable={selectable}
+                  style={[styles.tableCell, cell]}>
+                  {c}
+                </Text>
+              ))}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
