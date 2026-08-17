@@ -41,7 +41,10 @@ import {
   type Store,
 } from '../core/store/transcriptStore';
 
-jest.mock('./settings', () => ({readSettings: jest.fn(), updateSettings: jest.fn(async () => true)}));
+jest.mock('./settings', () => ({
+  readSettings: jest.fn(),
+  updateSettings: jest.fn(async () => true),
+}));
 jest.mock('./secureKey', () => ({getApiKey: jest.fn()}));
 jest.mock('./fs', () => ({listDirNative: jest.fn(async () => [])}));
 jest.mock('./reading', () => ({
@@ -59,7 +62,9 @@ jest.mock('./reading', () => ({
       return false;
     }
     const bar = doc.docHash.indexOf('|');
-    return (bar >= 0 ? doc.docHash.slice(0, bar) : doc.docHash) === String(bytes);
+    return (
+      (bar >= 0 ? doc.docHash.slice(0, bar) : doc.docHash) === String(bytes)
+    );
   },
   pdfMarkSzOf: (doc: {docHash: string; markSz?: number} | undefined) => {
     if (doc === undefined) {
@@ -94,7 +99,7 @@ jest.mock('./transcriptStoreIo', () => {
     __state: state,
     loadStore: jest.fn(async () => state.store),
     isDegradedLoad: jest.fn(() => false),
-  isDocReadOnly: jest.fn(() => false),
+    isDocReadOnly: jest.fn(() => false),
     mutateStore: jest.fn(async (fn: (s: unknown) => void) => {
       fn(state.store);
     }),
@@ -114,18 +119,15 @@ const needMock = pagesNeedingRead as jest.MockedFunction<
 >;
 const readMock = readNotePages as jest.MockedFunction<typeof readNotePages>;
 const syncMock = syncNotePages as jest.MockedFunction<typeof syncNotePages>;
-const revsMock = readFooterRevs as jest.MockedFunction<
-  typeof readFooterRevs
->;
+const revsMock = readFooterRevs as jest.MockedFunction<typeof readFooterRevs>;
 const readPdfMock = readPdf as jest.MockedFunction<typeof readPdf>;
 const fileSizeMock = readFileSize as jest.MockedFunction<typeof readFileSize>;
 const fvMock = finishVisionLive as jest.MockedFunction<typeof finishVisionLive>;
 const pendingVisionMock = (
   jest.requireMock('./reading') as {pendingVisionPages: jest.Mock}
 ).pendingVisionPages;
-const listDirMock = (
-  jest.requireMock('./fs') as {listDirNative: jest.Mock}
-).listDirNative;
+const listDirMock = (jest.requireMock('./fs') as {listDirNative: jest.Mock})
+  .listDirNative;
 
 const NOTE = '/Note/tracked.note';
 const REVS = new Map([
@@ -152,7 +154,10 @@ const deps = (over: Partial<CaptureDeps> = {}): CaptureDeps => ({
   getNoteTotalPageNum: async () => 3,
   saveCurrentNote: jest.fn(async () => ({success: true})),
   deleteFile: async () => true,
-  fetchFn: async () => ({ok: true, arrayBuffer: async () => new ArrayBuffer(1)}),
+  fetchFn: async () => ({
+    ok: true,
+    arrayBuffer: async () => new ArrayBuffer(1),
+  }),
   ...over,
 });
 
@@ -198,7 +203,10 @@ describe('autoTranscriptTick scheduling', () => {
     __setBootAtForTests(nowMs); // process just started
     const auto = await autoTranscriptTick(deps());
     expect(auto.ran).toBe(false); // cold storm deferred
-    const forced = await autoTranscriptTick(deps(), {force: true, trigger: 'sync'});
+    const forced = await autoTranscriptTick(deps(), {
+      force: true,
+      trigger: 'sync',
+    });
     expect(forced.ran).toBe(true); // the user's own button never waits
     nowMs += 61_000; // grace elapsed
     const later = await autoTranscriptTick(deps());
@@ -304,7 +312,9 @@ describe('autoTranscriptTick scheduling', () => {
       [2],
     );
     // Whole backlog fit the budget AND read ok → the NEW sig is stamped.
-    expect(getStamp(storeState.store, NOTE)).toBe('v2:' + footerSignature(moved));
+    expect(getStamp(storeState.store, NOTE)).toBe(
+      'v2:' + footerSignature(moved),
+    );
   });
 
   it('a page that FAILS to read is NOT stamped → the note is retried (device bug 2026-07-18)', async () => {
@@ -313,12 +323,19 @@ describe('autoTranscriptTick scheduling', () => {
     moved.set(2, 'X');
     revsMock.mockResolvedValue(moved);
     needMock.mockResolvedValue([2]);
-    readMock.mockResolvedValue({ok: false, read: 0, failed: [2], reason: 'render failed'});
+    readMock.mockResolvedValue({
+      ok: false,
+      read: 0,
+      failed: [2],
+      reason: 'render failed',
+    });
     await autoTranscriptTick(deps(), {force: true});
     // Stamping on ATTEMPT would have marked the note covered and skipped it
     // forever (the "2 pages to read that never drains" symptom). It must
     // stay UNstamped so the next tick retries.
-    expect(getStamp(storeState.store, NOTE)).not.toBe('v2:' + footerSignature(moved));
+    expect(getStamp(storeState.store, NOTE)).not.toBe(
+      'v2:' + footerSignature(moved),
+    );
 
     // v0.47: plain `force` (Sync now) TRUSTS the stamp — bypassing it made
     // every Sync now re-walk the whole Manual library (minutes of bridge
@@ -370,9 +387,7 @@ describe('autoTranscriptTick scheduling', () => {
     }));
     const out = await autoTranscriptTick(d);
     expect(readMock).toHaveBeenCalledTimes(1);
-    expect(readMock.mock.calls[0][4]).toEqual(
-      all.slice(0, MAX_PAGES_PER_TICK),
-    );
+    expect(readMock.mock.calls[0][4]).toEqual(all.slice(0, MAX_PAGES_PER_TICK));
     expect(out.pagesRead).toBe(MAX_PAGES_PER_TICK);
     // Postponed backlog → no stamp, the note retries next tick.
     expect(getStamp(storeState.store, NOTE)).toBe('');
@@ -405,7 +420,10 @@ describe('autoTranscriptTick scheduling', () => {
     });
     needMock.mockResolvedValue([2]);
     readMock.mockResolvedValue({ok: true, read: 1, failed: []});
-    const out = await autoTranscriptTick(d, {force: true, includeCurrent: true});
+    const out = await autoTranscriptTick(d, {
+      force: true,
+      includeCurrent: true,
+    });
     expect(readMock.mock.calls[0][4]).toEqual([2]); // NOT deferred
     expect(out.pagesRead).toBe(1);
     expect(getStamp(storeState.store, NOTE)).toBe(SIG); // fully covered
@@ -426,7 +444,12 @@ describe('autoTranscriptTick scheduling', () => {
     const NOTE2 = '/Note/cursed.note';
     settingsMock.mockResolvedValue({autoTargets: {[NOTE2]: {mode: 'auto'}}});
     needMock.mockResolvedValue([1]);
-    readMock.mockResolvedValue({ok: false, read: 0, failed: [1], reason: 'blank render'});
+    readMock.mockResolvedValue({
+      ok: false,
+      read: 0,
+      failed: [1],
+      reason: 'blank render',
+    });
     for (let i = 0; i < 3; i++) {
       await autoTranscriptTick(deps(), {force: true});
       nowMs += 60_000;
@@ -480,7 +503,12 @@ describe('doc.owed after a paid pass (sync-count redesign)', () => {
   it('a free tick RE-RUNS owed after a write invalidated it (round-4 audit)', async () => {
     const s = storeState.store;
     // 3 pages all with entries → total-read=0 → NOT storePending.
-    const pe = (t: string) => ({text: t, source: 'medium' as const, at: 1, hash: ''});
+    const pe = (t: string) => ({
+      text: t,
+      source: 'medium' as const,
+      at: 1,
+      hash: '',
+    });
     upsertPage(s, NOTE, 0, pe('a'), 1);
     upsertPage(s, NOTE, 1, pe('b'), 1);
     upsertPage(s, NOTE, 2, pe('c'), 1);
@@ -504,8 +532,20 @@ describe('doc.owed after a paid pass (sync-count redesign)', () => {
     // count in owed.vision. Page 0 = OCR-only AND flagged for read; page 1 =
     // OCR-only, NOT flagged. Expect read=1 (page 0), vision=1 (page 1 only).
     const s = storeState.store;
-    upsertPage(s, NOTE, 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
-    upsertPage(s, NOTE, 1, {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    upsertPage(
+      s,
+      NOTE,
+      0,
+      {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''},
+      1,
+    );
+    upsertPage(
+      s,
+      NOTE,
+      1,
+      {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''},
+      1,
+    );
     needMock.mockResolvedValue([0]); // only page 0 needs a re-read
     await recordOwed(deps(), NOTE, [0, 1]);
     const o = getOwed(s, NOTE);
@@ -519,8 +559,20 @@ describe('doc.owed after a paid pass (sync-count redesign)', () => {
     // ✓✓ (canSync=false, Vision unreachable). An EMPTY precomputed read list must
     // still derive the DISJOINT vision from the store — here 2 OCR-only pages.
     const s = storeState.store;
-    upsertPage(s, NOTE, 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
-    upsertPage(s, NOTE, 1, {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    upsertPage(
+      s,
+      NOTE,
+      0,
+      {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''},
+      1,
+    );
+    upsertPage(
+      s,
+      NOTE,
+      1,
+      {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''},
+      1,
+    );
     await recordOwed(deps(), NOTE, [0, 1], []); // read leg done
     const o = getOwed(s, NOTE);
     expect(o?.read).toBe(0);
@@ -531,8 +583,20 @@ describe('doc.owed after a paid pass (sync-count redesign)', () => {
     // The changed-PDF path passes EVERY page as the read set; since a full re-read
     // redoes Vision too, no page owes Vision separately.
     const s = storeState.store;
-    upsertPage(s, NOTE, 0, {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''}, 1);
-    upsertPage(s, NOTE, 1, {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''}, 1);
+    upsertPage(
+      s,
+      NOTE,
+      0,
+      {text: 'ocr', source: 'mistral-ocr', at: 1, hash: ''},
+      1,
+    );
+    upsertPage(
+      s,
+      NOTE,
+      1,
+      {text: 'ocr2', source: 'mistral-ocr', at: 1, hash: ''},
+      1,
+    );
     await recordOwed(deps(), NOTE, [0, 1], [0, 1]); // every page re-read
     const o = getOwed(s, NOTE);
     expect(o?.read).toBe(2);
@@ -695,7 +759,11 @@ describe('vision drain (v0.87)', () => {
   });
 
   it('does not run without a key', async () => {
-    keyMock.mockResolvedValue({key: null, legacyFilePresent: false, migrated: false});
+    keyMock.mockResolvedValue({
+      key: null,
+      legacyFilePresent: false,
+      migrated: false,
+    });
     await autoTranscriptTick(deps(), {force: true});
     expect(fvMock).not.toHaveBeenCalled();
   });
@@ -750,8 +818,9 @@ describe('poke queue & frozen-timer flush (v0.87.3)', () => {
     });
     startAutoScheduler(d);
     // Tick A blocks inside its settings read → `running` stays true.
-    let release: ((s: Awaited<ReturnType<typeof readSettings>>) => void) | null =
-      null;
+    let release:
+      | ((s: Awaited<ReturnType<typeof readSettings>>) => void)
+      | null = null;
     settingsMock.mockReturnValueOnce(
       new Promise(r => {
         release = r;
@@ -807,7 +876,12 @@ describe('manual docs: paid ONLY on an explicit Sync now (no standing order)', (
     settingsMock.mockResolvedValue({autoTargets: {[NOTE]: {mode: 'manual'}}});
     needMock.mockResolvedValue([0, 1]);
     // Sync now leaves page 1 unread (HTTP 429).
-    readMock.mockResolvedValue({ok: false, read: 1, failed: [1], reason: 'HTTP 429'});
+    readMock.mockResolvedValue({
+      ok: false,
+      read: 1,
+      failed: [1],
+      reason: 'HTTP 429',
+    });
     await autoTranscriptTick(deps(), {
       trigger: 'sync',
       modeFilter: 'manual',
@@ -824,7 +898,11 @@ describe('manual docs: paid ONLY on an explicit Sync now (no standing order)', (
     expect(readMock).toHaveBeenCalledTimes(1); // unchanged: background never pays manual
 
     // Re-tapping Sync now reads the remainder.
-    await autoTranscriptTick(deps(), {trigger: 'sync', modeFilter: 'manual', force: true});
+    await autoTranscriptTick(deps(), {
+      trigger: 'sync',
+      modeFilter: 'manual',
+      force: true,
+    });
     expect(readMock).toHaveBeenCalledTimes(2);
   });
 });
@@ -840,7 +918,13 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
   const KEEPER = [{name: 'Keeper.note', isDir: false, size: 100}];
 
   it('purges a tracked note whose file is gone — after 3 confirmations, not before', async () => {
-    upsertPage(storeState.store, GHOST, 0, {text: 'old', source: 'medium', at: 1, hash: ''}, 1);
+    upsertPage(
+      storeState.store,
+      GHOST,
+      0,
+      {text: 'old', source: 'medium', at: 1, hash: ''},
+      1,
+    );
     settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
     needMock.mockResolvedValue([]);
     // A deleted file cannot be read: both the footer read AND readFileSize fail.
@@ -861,23 +945,41 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
   });
 
   it('does NOT purge when the file blips back (transient glitch): the streak resets', async () => {
-    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    upsertPage(
+      storeState.store,
+      GHOST,
+      0,
+      {text: 'txt', source: 'medium', at: 1, hash: ''},
+      1,
+    );
     settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
     needMock.mockResolvedValue([]);
     revsMock.mockResolvedValue(new Map());
     fileSizeMock.mockResolvedValue(null);
     listDirMock.mockResolvedValue(KEEPER);
-    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'}); // 1/3
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {
+      force: true,
+      trigger: 'sync',
+    }); // 1/3
     // File comes back (readable, real page count) → streak resets.
     nowMs += 60_000;
     fileSizeMock.mockResolvedValue(1000);
-    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 1}), {force: true, trigger: 'sync'});
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 1}), {
+      force: true,
+      trigger: 'sync',
+    });
     // Unreadable again for TWO more ticks — only 2/3 after the reset, so kept.
     nowMs += 60_000;
     fileSizeMock.mockResolvedValue(null);
-    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {
+      force: true,
+      trigger: 'sync',
+    });
     nowMs += 60_000;
-    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+    await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {
+      force: true,
+      trigger: 'sync',
+    });
     expect(storeState.store.docs[GHOST]).toBeDefined(); // reset worked → not pruned
   });
 
@@ -888,7 +990,13 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
     // glitches spread over a session would delete the real transcript. They must
     // reset it via presence-proof #2 (sig non-empty), keeping the streak truly
     // consecutive.
-    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    upsertPage(
+      storeState.store,
+      GHOST,
+      0,
+      {text: 'txt', source: 'medium', at: 1, hash: ''},
+      1,
+    );
     setStamp(storeState.store, GHOST, SIG); // last pass sealed it clean
     setDocHash(storeState.store, GHOST, 'h999'); // storeKnown, not storePending
     settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
@@ -899,13 +1007,19 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
       revsMock.mockResolvedValue(new Map()); // footer read fails
       fileSizeMock.mockResolvedValue(null); // file unreadable
       nowMs += 60_000;
-      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {
+        force: true,
+        trigger: 'sync',
+      });
     };
     const healthyStampSkip = async () => {
       revsMock.mockResolvedValue(REVS); // footer read OK → sig === stamp → stamp-skip
       fileSizeMock.mockResolvedValue(1000);
       nowMs += 60_000;
-      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 3}), {force: false, trigger: 'background'});
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 3}), {
+        force: false,
+        trigger: 'background',
+      });
     };
 
     await glitch(); // streak 1
@@ -921,7 +1035,13 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
     // readFileSize all at once on a PRESENT file. Without the folder-liveness
     // guard those three failures would look identical to a deletion and prune +
     // re-bill an intact transcript. The empty listing must HOLD forever.
-    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    upsertPage(
+      storeState.store,
+      GHOST,
+      0,
+      {text: 'txt', source: 'medium', at: 1, hash: ''},
+      1,
+    );
     settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
     needMock.mockResolvedValue([]);
     revsMock.mockResolvedValue(new Map()); // footer unreadable (volume down)
@@ -929,7 +1049,10 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
     listDirMock.mockResolvedValue([]); // folder itself gives nothing → no proof
     for (let i = 0; i < 5; i++) {
       nowMs += 60_000;
-      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {
+        force: true,
+        trigger: 'sync',
+      });
     }
     expect(storeState.store.docs[GHOST]).toBeDefined(); // 5 ticks, still kept
   });
@@ -937,21 +1060,102 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
   it('NEVER prunes a note the folder still lists (present but locked/unreadable this tick)', async () => {
     // readFileSize can return null for a file that is merely locked or mid-write
     // while still present. If the folder lists it, it is not a ghost.
-    upsertPage(storeState.store, GHOST, 0, {text: 'txt', source: 'medium', at: 1, hash: ''}, 1);
+    upsertPage(
+      storeState.store,
+      GHOST,
+      0,
+      {text: 'txt', source: 'medium', at: 1, hash: ''},
+      1,
+    );
     settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
     needMock.mockResolvedValue([]);
     revsMock.mockResolvedValue(new Map());
     fileSizeMock.mockResolvedValue(null);
     // The folder answers AND lists the ghost itself → present, just unreadable.
-    listDirMock.mockResolvedValue([{name: 'Ghost.note', isDir: false, size: 100}]);
+    listDirMock.mockResolvedValue([
+      {name: 'Ghost.note', isDir: false, size: 100},
+    ]);
     for (let i = 0; i < 5; i++) {
       nowMs += 60_000;
-      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {force: true, trigger: 'sync'});
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 0}), {
+        force: true,
+        trigger: 'sync',
+      });
     }
     expect(storeState.store.docs[GHOST]).toBeDefined(); // listed → never pruned
   });
-});
 
+  // Untracked-ghost sweep (user report 2026-08-17: "01-06.2026.note
+  // renamed, still in my Library"). The in-loop prune only visits
+  // `tracked` = files found on disk + explicit per-file keys — a note
+  // tracked via its FOLDER mode that gets renamed/deleted drops out of
+  // the walk and was never pruned. The post-loop sweep covers exactly
+  // those docs, with the same evidence rule and the same 3-tick streak.
+  describe('untracked-ghost sweep', () => {
+    const KEEPER = '/Note/Perso/Keeper.note';
+    const keeperListed = [{name: 'Keeper.note', isDir: false, size: 100}];
+    const bothListed = [
+      {name: 'Keeper.note', isDir: false, size: 100},
+      {name: 'Ghost.note', isDir: false, size: 100},
+    ];
+    // KEEPER is the tracked note that keeps the tick alive; GHOST has a
+    // transcript but NO autoTargets entry (its folder mode used to cover
+    // it — the walk no longer finds its file).
+    const arm = () => {
+      upsertPage(
+        storeState.store,
+        GHOST,
+        0,
+        {text: 'old', source: 'medium', at: 1, hash: ''},
+        1,
+      );
+      settingsMock.mockResolvedValue({autoTargets: {[KEEPER]: {mode: 'auto'}}});
+      needMock.mockResolvedValue([]);
+      revsMock.mockResolvedValue(REVS);
+      fileSizeMock.mockResolvedValue(1000);
+    };
+    const tick = async () => {
+      nowMs += 60_000;
+      await autoTranscriptTick(deps({getNoteTotalPageNum: async () => 1}), {
+        force: true,
+        trigger: 'sync',
+      });
+    };
+
+    it('prunes an untracked store doc whose file is proven gone — after 3 ticks, not before', async () => {
+      arm();
+      listDirMock.mockResolvedValue(keeperListed); // folder live, ghost absent
+      await tick();
+      expect(storeState.store.docs[GHOST]).toBeDefined(); // 1/3
+      await tick();
+      expect(storeState.store.docs[GHOST]).toBeDefined(); // 2/3
+      await tick();
+      expect(storeState.store.docs[GHOST]).toBeUndefined(); // 3/3 → pruned
+      expect(storeState.store.docs[KEEPER]).toBeDefined(); // tracked → untouched
+    });
+
+    it('keeps an untracked doc whose file still exists (e.g. tracking removed): present resets the streak', async () => {
+      arm();
+      listDirMock.mockResolvedValue(keeperListed);
+      await tick(); // 1/3
+      listDirMock.mockResolvedValue(bothListed); // the file is back/was there
+      await tick(); // present → streak cleared
+      listDirMock.mockResolvedValue(keeperListed);
+      await tick();
+      await tick(); // only 2 consecutive since the reset
+      expect(storeState.store.docs[GHOST]).toBeDefined();
+    });
+
+    it('NEVER sweeps during a storage outage: an empty/failed listing holds forever', async () => {
+      arm();
+      listDirMock.mockResolvedValue([]); // no proof — volume may be down
+      for (let i = 0; i < 5; i++) {
+        await tick();
+      }
+      expect(storeState.store.docs[GHOST]).toBeDefined();
+    });
+  });
+});
 
 describe('doc-failure counting (fix-audit lot-3, 2026-08-16)', () => {
   const PDFT = '/Note/tracked.pdf';
@@ -969,7 +1173,9 @@ describe('doc-failure counting (fix-audit lot-3, 2026-08-16)', () => {
   });
 
   it('an explicit Sync re-arms the per-page vision backoff of the synced doc', async () => {
-    const led = jest.requireActual('./failLedger') as typeof import('./failLedger');
+    const led = jest.requireActual(
+      './failLedger',
+    ) as typeof import('./failLedger');
     led.__resetFailLedgerForTests();
     led.noteFailure('vision', PDFT, 4);
     led.noteFailure('vision', PDFT, 4);
@@ -985,7 +1191,9 @@ describe('doc-failure counting (fix-audit lot-3, 2026-08-16)', () => {
 });
 
 it("an INTERNAL force poke (no trigger 'sync') never re-arms the backoffs", async () => {
-  const led = jest.requireActual('./failLedger') as typeof import('./failLedger');
+  const led = jest.requireActual(
+    './failLedger',
+  ) as typeof import('./failLedger');
   led.__resetFailLedgerForTests();
   const PDFT = '/Note/tracked.pdf';
   led.noteFailure('vision', PDFT, 4);

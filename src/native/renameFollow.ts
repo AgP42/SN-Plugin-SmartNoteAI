@@ -19,10 +19,7 @@ import {listDirNative} from './fs';
 import {mutateStore} from './transcriptStoreIo';
 import {retireRenamedDoc} from '../core/store/transcriptStore';
 import {updateSettingsWith, type Settings} from './settings';
-import {
-  migrateAutoTargets,
-  migrateAgentPaths,
-} from '../core/store/renamePath';
+import {migrateAutoTargets, migrateAgentPaths} from '../core/store/renamePath';
 
 // THE ONE evidence primitive (lot 4b, 2026-08-16). This rule used to live in
 // three hand-synchronized copies — here, the ghost-prune's folder re-listing
@@ -36,22 +33,45 @@ import {
 //                 like an empty folder): conclude nothing, change nothing
 export type FolderEvidence = 'present' | 'proven-gone' | 'no-proof';
 
-export const folderEvidence = async (
-  path: string,
-): Promise<FolderEvidence> => {
-  const cut = path.lastIndexOf('/');
-  if (cut <= 0) {
-    return 'no-proof';
+export const folderEvidence = async (path: string): Promise<FolderEvidence> =>
+  (await folderEvidenceBatch([path])).get(path) ?? 'no-proof';
+
+// Batched form of THE SAME rule — one listing per distinct folder, so a
+// sweep over many paths (the untracked-ghost sweep, 2026-08-17) does not
+// re-list a folder per file. The single-path folderEvidence above is a
+// wrapper over this, keeping exactly one implementation of the rule.
+export const folderEvidenceBatch = async (
+  paths: readonly string[],
+): Promise<Map<string, FolderEvidence>> => {
+  const out = new Map<string, FolderEvidence>();
+  const byDir = new Map<string, string[]>();
+  for (const path of paths) {
+    const cut = path.lastIndexOf('/');
+    if (cut <= 0) {
+      out.set(path, 'no-proof');
+      continue;
+    }
+    const dir = path.slice(0, cut);
+    byDir.set(dir, [...(byDir.get(dir) ?? []), path]);
   }
-  const dir = path.slice(0, cut);
-  const base = path.slice(cut + 1);
-  const entries = await listDirNative(dir).catch(() => []);
-  if (entries.length === 0) {
-    return 'no-proof'; // empty folder OR failed listing — indistinguishable
+  for (const [dir, dirPaths] of byDir) {
+    const entries = await listDirNative(dir).catch(() => []);
+    for (const path of dirPaths) {
+      if (entries.length === 0) {
+        // empty folder OR failed listing — indistinguishable
+        out.set(path, 'no-proof');
+        continue;
+      }
+      const base = path.slice(dir.length + 1);
+      out.set(
+        path,
+        entries.some(e => !e.isDir && e.name === base)
+          ? 'present'
+          : 'proven-gone',
+      );
+    }
   }
-  return entries.some(e => !e.isDir && e.name === base)
-    ? 'present'
-    : 'proven-gone';
+  return out;
 };
 
 // Is this file PROVEN absent from its folder? Never a guess: see the
@@ -61,10 +81,7 @@ export const provenGone = async (path: string): Promise<boolean> =>
 
 // The whole follow-through for a CONFIRMED rename. Callers own the proof
 // that `from` is gone and that `to` now carries its content.
-export const followRename = async (
-  from: string,
-  to: string,
-): Promise<void> => {
+export const followRename = async (from: string, to: string): Promise<void> => {
   // Settings first: one queued read-modify-write for both fields, so a
   // concurrent writer can never overwrite this with a stale copy.
   await updateSettingsWith(s => {

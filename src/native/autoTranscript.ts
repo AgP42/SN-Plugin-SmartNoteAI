@@ -14,7 +14,7 @@
 import type {CaptureDeps} from './capture';
 import {setActivity, stopRequested} from './activity';
 import {listDirNative} from './fs';
-import {folderEvidence} from './renameFollow';
+import {folderEvidence, folderEvidenceBatch} from './renameFollow';
 import {
   noteFailure,
   clearFailure,
@@ -1311,6 +1311,49 @@ export const autoTranscriptTick = async (
       // OCR-only pages awaiting Vision remain visible (round-7 audit: passing 0
       // there hard-set vision=0 and hid the Vision backlog).
       await recordOwed(deps, notePath, wanted, fullyCovered ? [] : undefined);
+    }
+    // GHOST SWEEP for store docs the loop above can NEVER visit (user
+    // report 2026-08-17, "01-06.2026.note renamed, still in my Library"):
+    // the loop iterates `tracked` = files FOUND ON DISK by the walk plus
+    // explicit per-file keys — so a note tracked via its FOLDER mode that
+    // is renamed or deleted drops out of the walk and its transcript
+    // haunts the Library forever (the in-loop prune only ever fires for
+    // paths the loop visits). Also covers a rename donor whose adoption
+    // never ran because the new name was not read yet. Same fail-safe
+    // design as the in-loop prune: THE evidence primitive (one listing
+    // per folder via the batch) + the same 3-consecutive-tick streak;
+    // 'present' clears the streak, 'no-proof' holds it — a storage
+    // outage can never delete a live transcript. A doc lock survives as
+    // a stub (removeDoc, spec S6).
+    if (!stopRequested()) {
+      const sweepDocs = Object.keys((await loadStore()).docs).filter(
+        p => !tracked.has(p),
+      );
+      if (sweepDocs.length > 0) {
+        const evidence = await folderEvidenceBatch(sweepDocs);
+        for (const p of sweepDocs) {
+          const ev = evidence.get(p) ?? 'no-proof';
+          if (ev === 'present') {
+            ghostStreak.delete(p); // untracked but alive (e.g. Off) — keep
+            continue;
+          }
+          if (ev === 'no-proof') {
+            continue; // hold the streak — never prune without proof
+          }
+          const n = (ghostStreak.get(p) ?? 0) + 1;
+          if (n >= CONSEC_GHOST_TICKS) {
+            ghostStreak.delete(p);
+            console.log(
+              '[SmartNoteAI.auto]',
+              `${p.split('/').pop()}: untracked, file gone for ` +
+                `${CONSEC_GHOST_TICKS} ticks → pruning ghost transcript`,
+            );
+            await mutateStore(s => removeDoc(s, p));
+          } else {
+            ghostStreak.set(p, n);
+          }
+        }
+      }
     }
     // v0.87 Vision drain — "no OCR-only page left behind" (user rule
     // 2026-07-30): finish the Vision leg of every stored OCR-only page the
