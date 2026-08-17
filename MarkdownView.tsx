@@ -58,19 +58,30 @@ function MdTable({
     <ScrollView
       horizontal
       style={{marginBottom: gap, height: h}}
-      showsHorizontalScrollIndicator
-      // v0.81 (user): height follows the REAL content height (grow-only, so
-      // no feedback loop / freeze) — the old set-once onLayout pin measured
-      // too early and clipped the bottom rows of tall tables (the "can't
-      // scroll to the bottom" bug). onContentSizeChange fires AFTER the
-      // cells wrap, so the box always shows the whole table; the outer chat
-      // scroll handles the vertical, this one the horizontal.
-      onContentSizeChange={(_w, ch) => {
-        if (ch > 0 && ch > (h ?? 0)) {
-          setH(ch);
-        }
-      }}>
-      <View style={styles.table}>
+      showsHorizontalScrollIndicator>
+      {/* v1.0.38 (device repro 2026-08-17, "giant void under a .md
+          table"): the pin follows the TABLE's own onLayout, no longer the
+          scroll view's contentSize. On the add-a-turn re-measure pass the
+          nested horizontal ScrollView can be given the OUTER chat's whole
+          content height (the v0.78.3 ballooning), and contentSize then
+          REPORTS that stretched height — one such reading poisoned the
+          v0.81 grow-only pin forever: a huge blank box under the table,
+          the bubble border showing as a stray full-height line, and the
+          end-anchored auto-scroll landing in the void ("all white"). The
+          inner View is alignSelf:'flex-start', so its layout height IS
+          the real table height whatever the container got stretched to —
+          and following it both ways (grow AND shrink) lets a poisoned
+          frame heal instead of ratcheting. Setting the scroll view's
+          height does not change the flex-start child's height, so this
+          cannot feedback-loop. */}
+      <View
+        style={styles.table}
+        onLayout={e => {
+          const lh = e.nativeEvent.layout.height;
+          if (lh > 0) {
+            setH(prev => (prev === lh ? prev : lh));
+          }
+        }}>
         <View style={rowStyle}>
           {pad(header).map((c, ci) => (
             <Text
@@ -117,7 +128,10 @@ type Props = {
 
 const BLACK = '#000000';
 const CODE_BG = '#e8e8e8';
-const LOW_STYLE: TextStyle = {fontWeight: '700', textDecorationLine: 'underline'};
+const LOW_STYLE: TextStyle = {
+  fontWeight: '700',
+  textDecorationLine: 'underline',
+};
 // WORD_SPLIT is imported from core/text/lowMatch and SHARED with
 // matchedLowWords, so the "N unsure" label always counts exactly what
 // gets underlined here.
@@ -176,7 +190,9 @@ function MarkdownView(props: Props): React.JSX.Element {
                 key={pi}
                 selectable={selectable}
                 style={LOW_STYLE}
-                onPress={onWordPress ? () => onWordPress(part, nth) : undefined}>
+                onPress={
+                  onWordPress ? () => onWordPress(part, nth) : undefined
+                }>
                 {part}
               </Text>
             );
@@ -234,10 +250,7 @@ function MarkdownView(props: Props): React.JSX.Element {
         return (
           <View key={key} style={{paddingLeft: fs, marginBottom: gap}}>
             {b.items.map((item, ii) => (
-              <Text
-                key={ii}
-                selectable={selectable}
-                style={[baseStyle, base]}>
+              <Text key={ii} selectable={selectable} style={[baseStyle, base]}>
                 {'•  '}
                 {renderSpans(item)}
               </Text>
@@ -248,10 +261,7 @@ function MarkdownView(props: Props): React.JSX.Element {
         return (
           <View key={key} style={{paddingLeft: fs, marginBottom: gap}}>
             {b.items.map((item, ii) => (
-              <Text
-                key={ii}
-                selectable={selectable}
-                style={[baseStyle, base]}>
+              <Text key={ii} selectable={selectable} style={[baseStyle, base]}>
                 {`${b.start + ii}. `}
                 {renderSpans(item)}
               </Text>
