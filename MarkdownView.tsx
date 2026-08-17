@@ -79,7 +79,19 @@ function MdTable({
         onLayout={e => {
           const lh = e.nativeEvent.layout.height;
           if (lh > 0) {
-            setH(prev => (prev === lh ? prev : lh));
+            setH(prev => {
+              if (prev === lh) {
+                return prev;
+              }
+              // Diagnostic (v1.0.39, giant-void hunt): every pin move,
+              // with the table's shape — structure only, never content.
+              console.log(
+                '[SmartNoteAI.md]',
+                `table pin ${prev ?? '∅'} → ${Math.round(lh)} ` +
+                  `(${rows.length + 1}x${cols})`,
+              );
+              return lh;
+            });
           }
         }}>
         <View style={rowStyle}>
@@ -152,6 +164,29 @@ function inlineStyle(t: InlineSpan['t']): TextStyle | null {
 function MarkdownView(props: Props): React.JSX.Element {
   const {text, scale = 1, baseStyle, selectable = true, onWordPress} = props;
   const blocks = React.useMemo(() => parseMarkdown(text ?? ''), [text]);
+  // Diagnostic (v1.0.39, giant-void hunt): when a text carries a table,
+  // log the whole BLOCK STRUCTURE once — kinds and sizes only (a table's
+  // rows×cols, a code block's line count), never any content. This is
+  // what tells us WHICH block owns a blank frame on a device report.
+  React.useEffect(() => {
+    if (!blocks.some(b => b.k === 'table')) {
+      return;
+    }
+    const shape = blocks
+      .map(b =>
+        b.k === 'table'
+          ? `table(${b.rows.length + 1}x${Math.max(
+              b.header.length,
+              ...b.rows.map(r => r.length),
+              1,
+            )})`
+          : b.k === 'code'
+          ? `code(${b.text.split('\n').length}l)`
+          : b.k,
+      )
+      .join(' ');
+    console.log('[SmartNoteAI.md]', `blocks: ${shape}`);
+  }, [blocks]);
   const lowSet = React.useMemo(
     () => new Set((props.lowWords ?? []).map(w => w.toLowerCase())),
     [props.lowWords],

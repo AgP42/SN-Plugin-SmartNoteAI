@@ -2575,6 +2575,15 @@ export default function ChatPanel({
                 onCopy={onCopy}
                 onLayout={e => {
                   turnY.current[i] = e.nativeEvent.layout.y;
+                  // Diagnostic (v1.0.39, giant-void hunt): a bubble taller
+                  // than any plausible reply is the balloon — say which.
+                  const th = e.nativeEvent.layout.height;
+                  if (th > 3000) {
+                    console.log(
+                      '[SmartNoteAI.chat]',
+                      `turn ${i} (${t.role}) ballooned: ${Math.round(th)}dp`,
+                    );
+                  }
                 }}
               />
             ))
