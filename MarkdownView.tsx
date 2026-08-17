@@ -172,18 +172,34 @@ function MarkdownView(props: Props): React.JSX.Element {
     if (!blocks.some(b => b.k === 'table')) {
       return;
     }
+    const chars = (spans: InlineSpan[]): number =>
+      spans.reduce((n, sp) => n + sp.s.length, 0);
     const shape = blocks
-      .map(b =>
-        b.k === 'table'
-          ? `table(${b.rows.length + 1}x${Math.max(
+      .map(b => {
+        switch (b.k) {
+          case 'table':
+            return `table(${b.rows.length + 1}x${Math.max(
               b.header.length,
               ...b.rows.map(r => r.length),
               1,
-            )})`
-          : b.k === 'code'
-          ? `code(${b.text.split('\n').length}l)`
-          : b.k,
-      )
+            )})`;
+          case 'code':
+            return `code(${b.text.split('\n').length}l)`;
+          case 'p':
+          case 'quote':
+            return `${b.k}(${chars(b.spans)}c)`;
+          case 'h':
+            return `h${b.level}(${chars(b.spans)}c)`;
+          case 'ul':
+          case 'ol':
+            return `${b.k}(${b.items.length}i,${b.items.reduce(
+              (n, it) => n + chars(it),
+              0,
+            )}c)`;
+          default:
+            return b.k;
+        }
+      })
       .join(' ');
     console.log('[SmartNoteAI.md]', `blocks: ${shape}`);
   }, [blocks]);
@@ -254,6 +270,22 @@ function MarkdownView(props: Props): React.JSX.Element {
 
   const gap = fs * 0.4;
 
+  // Diagnostic (v1.0.40, giant-void hunt round 2): any single block
+  // taller than 800dp names itself — the turn-level log said WHICH turn
+  // balloons (6218dp) while every block reads as fixed-style Text/View;
+  // this says WHICH block carries the invisible height.
+  const diagLayout =
+    (key: number, kind: string) =>
+    (e: {nativeEvent: {layout: {height: number}}}): void => {
+      const bh = e.nativeEvent.layout.height;
+      if (bh > 800) {
+        console.log(
+          '[SmartNoteAI.md]',
+          `block[${key}] ${kind} height ${Math.round(bh)}dp`,
+        );
+      }
+    };
+
   const renderBlock = (b: MdBlock, key: number): React.JSX.Element => {
     switch (b.k) {
       case 'h': {
@@ -267,7 +299,11 @@ function MarkdownView(props: Props): React.JSX.Element {
           marginBottom: gap,
         };
         return (
-          <Text key={key} selectable={selectable} style={[baseStyle, hs]}>
+          <Text
+            key={key}
+            onLayout={diagLayout(key, 'h')}
+            selectable={selectable}
+            style={[baseStyle, hs]}>
             {renderSpans(b.spans)}
           </Text>
         );
@@ -276,6 +312,7 @@ function MarkdownView(props: Props): React.JSX.Element {
         return (
           <Text
             key={key}
+            onLayout={diagLayout(key, 'p')}
             selectable={selectable}
             style={[baseStyle, base, {marginBottom: gap}]}>
             {renderSpans(b.spans)}
@@ -283,7 +320,10 @@ function MarkdownView(props: Props): React.JSX.Element {
         );
       case 'ul':
         return (
-          <View key={key} style={{paddingLeft: fs, marginBottom: gap}}>
+          <View
+            key={key}
+            onLayout={diagLayout(key, 'ul')}
+            style={{paddingLeft: fs, marginBottom: gap}}>
             {b.items.map((item, ii) => (
               <Text key={ii} selectable={selectable} style={[baseStyle, base]}>
                 {'•  '}
@@ -294,7 +334,10 @@ function MarkdownView(props: Props): React.JSX.Element {
         );
       case 'ol':
         return (
-          <View key={key} style={{paddingLeft: fs, marginBottom: gap}}>
+          <View
+            key={key}
+            onLayout={diagLayout(key, 'ol')}
+            style={{paddingLeft: fs, marginBottom: gap}}>
             {b.items.map((item, ii) => (
               <Text key={ii} selectable={selectable} style={[baseStyle, base]}>
                 {`${b.start + ii}. `}
@@ -319,6 +362,7 @@ function MarkdownView(props: Props): React.JSX.Element {
         return (
           <View
             key={key}
+            onLayout={diagLayout(key, 'quote')}
             style={{
               borderLeftWidth: 2,
               borderLeftColor: BLACK,
@@ -334,7 +378,10 @@ function MarkdownView(props: Props): React.JSX.Element {
         );
       case 'code':
         return (
-          <View key={key} style={[styles.codeBox, {marginBottom: gap}]}>
+          <View
+            key={key}
+            onLayout={diagLayout(key, 'code')}
+            style={[styles.codeBox, {marginBottom: gap}]}>
             <Text
               selectable={selectable}
               style={{
