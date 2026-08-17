@@ -81,6 +81,7 @@ import {
   canPersistDoc,
   isDegradedLoad,
   STORAGE_UNAVAILABLE_MSG,
+  LIBRARY_BACKUP_DIR,
 } from '../../src/native/transcriptStoreIo';
 import {type Agent, isUnderDocRef} from '../../src/core/agents/agents';
 import {computeSyncFrame} from './syncFrameModel';
@@ -515,7 +516,10 @@ function LibraryScreen({
       r.ok
         ? `Library backed up: ${r.docs} doc(s)` +
             (r.failed > 0 ? `, ${r.failed} FAILED (retry!)` : '') +
-            ' → MyStyle/smartnoteai-library-backup/.'
+            // Derived from the REAL destination (user report 2026-08-17:
+            // the message claimed MyStyle/… while the copy lands under
+            // MyStyle/Plugins/SmartNoteAI/…).
+            ` → ${LIBRARY_BACKUP_DIR.replace('/storage/emulated/0/', '')}/.`
         : `Library backup failed: ${r.error}.`,
     );
   }, [libDisarm, setMsg]);

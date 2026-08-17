@@ -669,8 +669,8 @@ You pay **Mistral directly**, for what you read or ask.
 Uninstalling the plugin **deletes its private directory**: your transcripts,
 your conversations, your settings and your stored key go with it. If you want
 to keep them: **Library → Back up library**, and **door 1 → Export settings**.
-Both write to `MyStyle/`, which survives the uninstall and is visible over USB
-or from the Partner app.
+Both write to `MyStyle/Plugins/SmartNoteAI/`, which survives the uninstall and
+is visible over USB or from the Partner app.
 
 ## 6.2 Why Mistral only
 
