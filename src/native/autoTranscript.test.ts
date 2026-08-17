@@ -44,6 +44,18 @@ import {
 jest.mock('./settings', () => ({
   readSettings: jest.fn(),
   updateSettings: jest.fn(async () => true),
+  // The dead-auto-entry purge (2026-08-17) feeds the updater the CURRENT
+  // readSettings value, like the real queued read-modify-write does.
+  updateSettingsWith: jest.fn(
+    async (up: (s: object) => object) =>
+      Object.keys(
+        up(
+          await (
+            jest.requireMock('./settings') as {readSettings: jest.Mock}
+          ).readSettings(),
+        ),
+      ).length > 0,
+  ),
 }));
 jest.mock('./secureKey', () => ({getApiKey: jest.fn()}));
 jest.mock('./fs', () => ({listDirNative: jest.fn(async () => [])}));
@@ -1083,6 +1095,58 @@ describe('ghost-transcript pruning (deleted note, 2026-08-15)', () => {
       });
     }
     expect(storeState.store.docs[GHOST]).toBeDefined(); // listed → never pruned
+  });
+
+  // Dead per-file AUTO entry (device 2026-08-17: deleted Demo
+  // Dashboard.note kept its explicit auto entry → probed every tick,
+  // forever). Same proof + streak retire the ENTRY; 'off'/'manual' dead
+  // entries are the rename-adoption payload (v1.0.6) and must survive.
+  describe('dead auto-entry purge', () => {
+    const settingsWithMock = (
+      jest.requireMock('./settings') as {updateSettingsWith: jest.Mock}
+    ).updateSettingsWith;
+
+    it('removes a proven-gone auto entry after 3 ticks — no store doc needed', async () => {
+      settingsMock.mockResolvedValue({autoTargets: {[GHOST]: {mode: 'auto'}}});
+      needMock.mockResolvedValue([]);
+      revsMock.mockResolvedValue(new Map());
+      fileSizeMock.mockResolvedValue(null);
+      listDirMock.mockResolvedValue(KEEPER);
+      const gone = deps({getNoteTotalPageNum: async () => 0});
+      for (let i = 0; i < 2; i++) {
+        nowMs += 60_000;
+        await autoTranscriptTick(gone, {force: true, trigger: 'sync'});
+      }
+      expect(settingsWithMock).not.toHaveBeenCalled(); // 2/3 — still held
+      nowMs += 60_000;
+      await autoTranscriptTick(gone, {force: true, trigger: 'sync'});
+      expect(settingsWithMock).toHaveBeenCalledTimes(1); // 3/3 → retired
+      const updater = settingsWithMock.mock.calls[0][0] as (s: object) => {
+        autoTargets?: Record<string, unknown>;
+      };
+      expect(
+        updater({autoTargets: {[GHOST]: {mode: 'auto'}}}).autoTargets,
+      ).toEqual({});
+      // Raced flip: if the entry is no longer 'auto' inside the write
+      // queue (user just set it Off), the updater backs off entirely.
+      expect(updater({autoTargets: {[GHOST]: {mode: 'off'}}})).toEqual({});
+    });
+
+    it("a dead 'manual' entry is NEVER purged — it is the rename protection", async () => {
+      settingsMock.mockResolvedValue({
+        autoTargets: {[GHOST]: {mode: 'manual'}},
+      });
+      needMock.mockResolvedValue([]);
+      revsMock.mockResolvedValue(new Map());
+      fileSizeMock.mockResolvedValue(null);
+      listDirMock.mockResolvedValue(KEEPER);
+      const gone = deps({getNoteTotalPageNum: async () => 0});
+      for (let i = 0; i < 4; i++) {
+        nowMs += 60_000;
+        await autoTranscriptTick(gone, {force: true, trigger: 'sync'});
+      }
+      expect(settingsWithMock).not.toHaveBeenCalled();
+    });
   });
 
   // Untracked-ghost sweep (user report 2026-08-17: "01-06.2026.note

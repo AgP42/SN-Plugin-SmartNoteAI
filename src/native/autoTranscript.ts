@@ -23,7 +23,7 @@ import {
   failCap,
 } from './failLedger';
 import {sleepHybrid} from './nativeSleep';
-import {readSettings, updateSettings} from './settings';
+import {readSettings, updateSettings, updateSettingsWith} from './settings';
 import {getApiKey} from './secureKey';
 import {
   loadStore,
@@ -1064,10 +1064,22 @@ export const autoTranscriptTick = async (
         // stale "1 to read" stops haunting the count; a real note whose file
         // blips back resets the streak and keeps its transcript (never re-billed).
         const isTracked = store.docs[notePath] !== undefined;
-        const sz = isTracked
-          ? await readFileSize(notePath).catch(() => null)
-          : 0;
-        if (isTracked && (sz === null || sz <= 0)) {
+        // Dead per-file 'auto' ENTRY (user device 2026-08-17: a deleted
+        // Demo Dashboard.note kept its explicit auto entry, so the tick
+        // probed the missing file every 20 s FOREVER — 3 native
+        // FileNotFound errors per tick, for a doc with no transcript at
+        // all). Only 'auto' entries are eligible: STRICTNESS auto=0, so a
+        // dead auto entry protects nothing — while a dead 'off'/'manual'
+        // entry is exactly the payload the rename adoption needs to keep a
+        // renamed notebook from being read and billed (v1.0.6); those stay.
+        const deadAutoEntry =
+          autoTargets[notePath] !== undefined &&
+          autoTargets[notePath].mode === 'auto';
+        const sz =
+          isTracked || deadAutoEntry
+            ? await readFileSize(notePath).catch(() => null)
+            : 0;
+        if ((isTracked || deadAutoEntry) && (sz === null || sz <= 0)) {
           // Storage-outage guard (audit 2026-08-15): readFileSize===null cannot
           // by itself tell a DELETED file from one on a volume that is briefly
           // unmounted / MTP-locked / stalled — during an outage the walk, the
@@ -1105,7 +1117,24 @@ export const autoTranscriptTick = async (
               '[SmartNoteAI.auto]',
               `${name}: file gone for ${CONSEC_GHOST_TICKS} ticks → pruning ghost transcript`,
             );
-            await mutateStore(s => removeDoc(s, notePath));
+            if (isTracked) {
+              await mutateStore(s => removeDoc(s, notePath));
+            }
+            if (deadAutoEntry) {
+              // Same proof, same streak: the probing stops with the entry.
+              await updateSettingsWith(cur => {
+                const t = {...(cur.autoTargets ?? {})};
+                if (t[notePath]?.mode === 'auto') {
+                  delete t[notePath];
+                  return {autoTargets: t};
+                }
+                return {};
+              }).catch(() => undefined);
+              console.log(
+                '[SmartNoteAI.auto]',
+                `${name}: dead auto entry removed (file proven gone)`,
+              );
+            }
           } else {
             ghostStreak.set(notePath, n);
             console.log(
