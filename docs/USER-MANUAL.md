@@ -39,7 +39,7 @@ AGENTS are all available today.
 **One engine.** Every page is read by **Mistral OCR 4**; pages it is unsure
 about (drawings, schemas, messy writing) are automatically re-read by
 Ministral Vision, guided by your glossary. Each page's provenance shows
-which was used: "Mistral OCR" or "Mistral OCR + Vision". Cost ≈3.5€/1000
+which was used: "Mistral OCR" or "Mistral OCR + Vision". Cost ≈3.85€/1000
 pages (the bare-OCR price; the vision re-read of the few hard pages adds a
 little). **PDFs** use the same engine — the whole PDF in one call, correct
 reading order on any layout. Handwritten annotations on a PDF **are**
@@ -59,7 +59,7 @@ Set a folder's mode and its notes inherit it (a note's own mode wins). The
 to Auto or Manual (Off excluded); untracked pages are read on demand from
 the chat. Consent-gated for the cloud; Auto is capped at 100 paid pages per
 pass, the rest caught up next tick. Rough cost: 100 new pages/week ≈
-0.35€/week, billed directly by Mistral.
+0.39€/week, billed directly by Mistral (EU regional pricing included).
 
 ### Glossary
 
