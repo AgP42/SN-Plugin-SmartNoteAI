@@ -2695,12 +2695,20 @@ export default function ChatPanel({
           disabled={!toolsOk || busy}
           style={[
             styles.oneShot,
+            styles.oneShotTwoLine,
             armWeb && styles.oneShotOn,
             (!toolsOk || busy) && styles.oneShotOff,
           ]}>
-          <Text style={[styles.oneShotText, armWeb && styles.oneShotTextOn]}>
-            Web (non-EU)
-          </Text>
+          {/* v1.0.44 (user): "(non-EU)" small under "Web" so the two-line
+              label keeps the old button footprint. */}
+          <View>
+            <Text style={[styles.oneShotMain, armWeb && styles.oneShotTextOn]}>
+              Web
+            </Text>
+            <Text style={[styles.oneShotSub, armWeb && styles.oneShotTextOn]}>
+              (non-EU)
+            </Text>
+          </View>
         </TouchableOpacity>
         {busy ? (
           <TouchableOpacity onPress={onStop} style={styles.sendBtn}>

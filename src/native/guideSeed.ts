@@ -44,7 +44,7 @@ export const GUIDE_PDF_PATH = `${GUIDE_DIR}/SmartNote AI - User Guide.pdf`;
 // installed guide whose stamp differs is REPLACED — file and transcript
 // (yes, including a user-edited copy: it is our document, and stale
 // instructions are worse than a lost annotation).
-const GUIDE_REV = 23;
+const GUIDE_REV = 24;
 const GUIDE_STAMP = `guide-rev:${GUIDE_REV}`;
 
 type GuidePage = {title: string; body: string};
@@ -107,7 +107,10 @@ export const ensureUserGuide = async (): Promise<void> => {
     // fall through
   }
   if (byteLen === 0) {
-    console.warn('[SmartNoteAI.guide]', 'installed guide PDF unreadable — seed skipped');
+    console.warn(
+      '[SmartNoteAI.guide]',
+      'installed guide PDF unreadable — seed skipped',
+    );
     return;
   }
   const now = Date.now();
@@ -121,7 +124,13 @@ export const ensureUserGuide = async (): Promise<void> => {
     );
     (guidePages as GuidePage[]).forEach((p, i) => {
       // PDF pages carry hash '' (like every PDF page entry).
-      upsertPage(s, GUIDE_PDF_PATH, i, makePageEntry(pageText(p), 'guide', {hash: ''}, now), now);
+      upsertPage(
+        s,
+        GUIDE_PDF_PATH,
+        i,
+        makePageEntry(pageText(p), 'guide', {hash: ''}, now),
+        now,
+      );
     });
     setDocHash(s, GUIDE_PDF_PATH, String(byteLen)); // pdfCovered → never "to sync"
     setStamp(s, GUIDE_PDF_PATH, GUIDE_STAMP);
@@ -140,9 +149,13 @@ export const ensureUserGuide = async (): Promise<void> => {
 // that first and keep openFilePath as the fallback.
 export const openUserGuide = async (): Promise<boolean> => {
   await ensureUserGuide().catch(() => {});
-  const ov = (NativeModules as {SmartNoteAiOverlay?: {
-    openNoteAt?: (p: string, page: number) => Promise<{success?: boolean}>;
-  }}).SmartNoteAiOverlay;
+  const ov = (
+    NativeModules as {
+      SmartNoteAiOverlay?: {
+        openNoteAt?: (p: string, page: number) => Promise<{success?: boolean}>;
+      };
+    }
+  ).SmartNoteAiOverlay;
   try {
     const r = await ov?.openNoteAt?.(GUIDE_PDF_PATH, 1);
     if (r !== undefined && (r as {success?: boolean}).success !== false) {
