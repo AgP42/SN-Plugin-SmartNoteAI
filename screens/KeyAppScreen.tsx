@@ -101,7 +101,6 @@ function KeyAppScreen({
   chipRow,
   subHeader,
 }: KeyAppScreenProps): React.JSX.Element {
-
   const [keyInput, setKeyInput] = useState<string>('');
 
   /* ---------- key ---------- */
@@ -112,7 +111,8 @@ function KeyAppScreen({
   const onPasteKey = useCallback(async () => {
     try {
       const r = await (
-        (NativeModules as {SmartNoteAiOverlay?: unknown}).SmartNoteAiOverlay as {
+        (NativeModules as {SmartNoteAiOverlay?: unknown})
+          .SmartNoteAiOverlay as {
           getClipboardText?: () => Promise<{success?: boolean; text?: string}>;
         }
       )?.getClipboardText?.();
@@ -213,184 +213,199 @@ function KeyAppScreen({
   const lf = {fontSize: 13 * scale};
   const keyOk = keyState.kind === 'ok';
 
-    return (
-      <View style={styles.root}>
-        {subHeader('1 · API key, privacy, backup & appearance')}
-        <ScrollView contentContainerStyle={styles.body}>
-          <Text style={[styles.section, sf]}>Mistral API key</Text>
-          <Text style={[styles.manual, mf]}>
-            {keyOk
-              ? `Current key: ${maskKey((keyState as {config: ModelConfig}).config.apiKey)}, kept in the plugin's private storage — never synced to the cloud, not in device backups.`
-              : 'No key stored yet. Paste your Mistral API key below.'}
-          </Text>
-          <Text style={[styles.modelNote, nf]}>
-            Get one at https://console.mistral.ai/ → API Keys → Create (about
-            3 clicks). The free tier allows using all features of this plugin,
-            but only a paid plan guarantees Mistral never uses your data to
-            train its models.
-          </Text>
-          <TextInput
-            style={styles.input}
-            value={keyInput}
-            onChangeText={setKeyInput}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="paste a new Mistral API key…"
-          />
-          <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8}}>
-            <TouchableOpacity onPress={onPasteKey} style={styles.smallBtn}>
-              <Text style={styles.smallBtnText}>Paste from clipboard</Text>
-            </TouchableOpacity>
-            {keyInput.length > 0 ? (
-              <TouchableOpacity
-                onPress={() => setKeyInput('')}
-                style={styles.smallBtn}>
-                <Text style={styles.smallBtnText}>Clear</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-          <TouchableOpacity
-            onPress={onSaveKey}
-            disabled={keyInput.trim().length === 0}
-            style={[styles.smallBtn, keyInput.trim().length === 0 && styles.smallBtnOff]}>
-            <Text style={styles.smallBtnText}>Save key</Text>
+  return (
+    <View style={styles.root}>
+      {subHeader('1 · API key, privacy, backup & appearance')}
+      <ScrollView contentContainerStyle={styles.body}>
+        <Text style={[styles.section, sf]}>Mistral API key</Text>
+        <Text style={[styles.manual, mf]}>
+          {keyOk
+            ? `Current key: ${maskKey(
+                (keyState as {config: ModelConfig}).config.apiKey,
+              )}, kept in the plugin's private storage — never synced to the cloud, not in device backups.`
+            : 'No key stored yet. Paste your Mistral API key below.'}
+        </Text>
+        <Text style={[styles.modelNote, nf]}>
+          Get one at https://console.mistral.ai/ → API Keys → Create (about 3
+          clicks). The free tier allows using all features of this plugin, but
+          only a paid plan guarantees Mistral never uses your data to train its
+          models.
+        </Text>
+        <TextInput
+          style={styles.input}
+          value={keyInput}
+          onChangeText={setKeyInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="paste a new Mistral API key…"
+        />
+        <View
+          style={{
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            gap: 8,
+            marginTop: 8,
+          }}>
+          <TouchableOpacity onPress={onPasteKey} style={styles.smallBtn}>
+            <Text style={styles.smallBtnText}>Paste from clipboard</Text>
           </TouchableOpacity>
-          {keyOk ? (
+          {keyInput.length > 0 ? (
             <TouchableOpacity
-              onPress={onDeleteKey}
-              style={[
-                styles.smallBtn,
-                confirmDelKey && {backgroundColor: '#000000'},
-              ]}>
-              <Text
-                style={[
-                  styles.smallBtnText,
-                  confirmDelKey && {color: '#ffffff'},
-                ]}>
-                {confirmDelKey
-                  ? 'Really delete the stored key?'
-                  : 'Delete stored key'}
-              </Text>
+              onPress={() => setKeyInput('')}
+              style={styles.smallBtn}>
+              <Text style={styles.smallBtnText}>Clear</Text>
             </TouchableOpacity>
           ) : null}
-          {legacyPresent ? (
-            <>
-              <Text style={[styles.modelNote, nf]}>
-                The old key file (MyStyle/…/mistral-key.txt) still exists.
-                MyStyle syncs to the Supernote cloud; once the key works
-                here, delete it.
-              </Text>
-              <TouchableOpacity onPress={onDeleteLegacy} style={styles.smallBtn}>
-                <Text style={styles.smallBtnText}>Delete old key file</Text>
-              </TouchableOpacity>
-            </>
-          ) : null}
-
-          <Text style={[styles.section, sf]}>Privacy</Text>
-          <Text style={[styles.manual, mf]}>
-            Using CHAT or a Sync sends your questions and the pages' content
-            (text, and images when reading) to Mistral (EU) with your own
-            key. Nothing is stored on their servers, and only a paid Mistral
-            plan guarantees your data never trains their models. Files set
-            to Off are never sent without your explicit one-shot consent
-            (asked in chat, forgotten after the answer).
-          </Text>
-          <Text style={[styles.modelNote, nf]}>
-            Transcripts stay on this device only. This wipes every one of
-            them for good (same as the Library button).
-          </Text>
-          {/* v0.80.1 (user): armed = inverted video, everywhere. */}
+        </View>
+        <TouchableOpacity
+          onPress={onSaveKey}
+          disabled={keyInput.trim().length === 0}
+          style={[
+            styles.smallBtn,
+            keyInput.trim().length === 0 && styles.smallBtnOff,
+          ]}>
+          <Text style={styles.smallBtnText}>Save key</Text>
+        </TouchableOpacity>
+        {keyOk ? (
           <TouchableOpacity
-            onPress={clearAll}
+            onPress={onDeleteKey}
             style={[
               styles.smallBtn,
-              confirmClear === 'ALL' && {backgroundColor: '#000000'},
+              confirmDelKey && {backgroundColor: '#000000'},
             ]}>
             <Text
               style={[
                 styles.smallBtnText,
-                confirmClear === 'ALL' && {color: '#ffffff'},
+                confirmDelKey && {color: '#ffffff'},
               ]}>
-              {confirmClear === 'ALL'
-                ? 'Really clear ALL transcripts?'
-                : 'Clear ALL transcripts'}
+              {confirmDelKey
+                ? 'Really delete the stored key?'
+                : 'Delete stored key'}
             </Text>
           </TouchableOpacity>
+        ) : null}
+        {legacyPresent ? (
+          <>
+            <Text style={[styles.modelNote, nf]}>
+              The old key file (MyStyle/…/mistral-key.txt) still exists. MyStyle
+              syncs to the Supernote cloud; once the key works here, delete it.
+            </Text>
+            <TouchableOpacity onPress={onDeleteLegacy} style={styles.smallBtn}>
+              <Text style={styles.smallBtnText}>Delete old key file</Text>
+            </TouchableOpacity>
+          </>
+        ) : null}
 
-          <Text style={[styles.section, sf]}>Settings backup</Text>
-          <Text style={[styles.manual, mf]}>
-            Settings are stored in the plugin's private storage (never
-            cloud-synced). Export writes a readable copy to{' '}
-            {EXPORT_SETTINGS_PATH.replace('/storage/emulated/0/', '')} —
-            as a backup, to edit by hand, or to move to another device.
-            Import replaces ALL settings with that file.
+        <Text style={[styles.section, sf]}>Privacy</Text>
+        <Text style={[styles.manual, mf]}>
+          Using CHAT or a Sync sends your questions and the pages' content
+          (text, and images when reading) to Mistral's EU endpoint with your own
+          key — inference runs in Europe (regional pricing, +10%, is already
+          included in every estimate shown). The ONE exception is the chat's
+          optional Web search: Mistral does not offer web search on EU
+          inference, so that single request uses their global endpoint, without
+          a residency guarantee — the button says non-EU so you always know.
+          Nothing is stored on their servers, and only a paid Mistral plan
+          guarantees your data never trains their models. Files set to Off are
+          never sent without your explicit one-shot consent (asked in chat,
+          forgotten after the answer).
+        </Text>
+        <Text style={[styles.modelNote, nf]}>
+          Transcripts stay on this device only. This wipes every one of them for
+          good (same as the Library button).
+        </Text>
+        {/* v0.80.1 (user): armed = inverted video, everywhere. */}
+        <TouchableOpacity
+          onPress={clearAll}
+          style={[
+            styles.smallBtn,
+            confirmClear === 'ALL' && {backgroundColor: '#000000'},
+          ]}>
+          <Text
+            style={[
+              styles.smallBtnText,
+              confirmClear === 'ALL' && {color: '#ffffff'},
+            ]}>
+            {confirmClear === 'ALL'
+              ? 'Really clear ALL transcripts?'
+              : 'Clear ALL transcripts'}
           </Text>
-          {/* Export and Import belong together (user 2026-08-11): the log
+        </TouchableOpacity>
+
+        <Text style={[styles.section, sf]}>Settings backup</Text>
+        <Text style={[styles.manual, mf]}>
+          Settings are stored in the plugin's private storage (never
+          cloud-synced). Export writes a readable copy to{' '}
+          {EXPORT_SETTINGS_PATH.replace('/storage/emulated/0/', '')} — as a
+          backup, to edit by hand, or to move to another device. Import replaces
+          ALL settings with that file.
+        </Text>
+        {/* Export and Import belong together (user 2026-08-11): the log
               section used to sit between them. */}
-          <TouchableOpacity onPress={onExportSettings} style={styles.smallBtn}>
-            <Text style={styles.smallBtnText}>Export settings</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={onImportSettings}
+        <TouchableOpacity onPress={onExportSettings} style={styles.smallBtn}>
+          <Text style={styles.smallBtnText}>Export settings</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onImportSettings}
+          style={[
+            styles.smallBtn,
+            importArmed === 'import' && {backgroundColor: '#000000'},
+          ]}>
+          <Text
             style={[
-              styles.smallBtn,
-              importArmed === 'import' && {backgroundColor: '#000000'},
+              styles.smallBtnText,
+              importArmed === 'import' && {color: '#ffffff'},
             ]}>
-            <Text
-              style={[
-                styles.smallBtnText,
-                importArmed === 'import' && {color: '#ffffff'},
-              ]}>
-              {importArmed === 'import'
-                ? 'Really replace ALL settings from the file?'
-                : 'Import settings (replace all)'}
-            </Text>
-          </TouchableOpacity>
-          {/* "Add starter agents" removed here (user 2026-08-11) — it is
+            {importArmed === 'import'
+              ? 'Really replace ALL settings from the file?'
+              : 'Import settings (replace all)'}
+          </Text>
+        </TouchableOpacity>
+        {/* "Add starter agents" removed here (user 2026-08-11) — it is
               the same action as "+ Add preset" in door 3, where agents are
               actually managed. */}
 
-          {/* v0.79.12: the transcript-library backup moved to the LIBRARY
+        {/* v0.79.12: the transcript-library backup moved to the LIBRARY
               page (its 'saved' feedback already lives there). */}
 
-          <Text style={[styles.section, sf]}>Export Log</Text>
-          <Text style={[styles.manual, mf]}>
-            The plugin keeps a short log of what it does. If something goes
-            wrong, export it right after the problem and attach the file to
-            your report — it lands in{' '}
-            {LOG_FILE_PATH.replace('/storage/emulated/0/', '')}, readable
-            over USB or from the Partner app. It records the plugin's own
-            activity; it never contains the text of your pages, your
-            questions, the answers, or your API key. The NAMES of the notes
-            and folders it touched do appear, in clear: it is a plain text
-            file, so you can open it and edit those names out before sending
-            it if you would rather not share them.
-          </Text>
-          <TouchableOpacity onPress={onExportLog} style={styles.smallBtn}>
-            <Text style={styles.smallBtnText}>Export diagnostic log</Text>
-          </TouchableOpacity>
+        <Text style={[styles.section, sf]}>Export Log</Text>
+        <Text style={[styles.manual, mf]}>
+          The plugin keeps a short log of what it does. If something goes wrong,
+          export it right after the problem and attach the file to your report —
+          it lands in {LOG_FILE_PATH.replace('/storage/emulated/0/', '')},
+          readable over USB or from the Partner app. It records the plugin's own
+          activity; it never contains the text of your pages, your questions,
+          the answers, or your API key. The NAMES of the notes and folders it
+          touched do appear, in clear: it is a plain text file, so you can open
+          it and edit those names out before sending it if you would rather not
+          share them.
+        </Text>
+        <TouchableOpacity onPress={onExportLog} style={styles.smallBtn}>
+          <Text style={styles.smallBtnText}>Export diagnostic log</Text>
+        </TouchableOpacity>
 
-          <Text style={[styles.section, sf]}>Appearance</Text>
-          <Text style={[styles.label, lf]}>Text size</Text>
-          {chipRow(
-            TEXT_SIZES.map(t => [t.scale, t.label] as [number, string]),
-            scale,
-            setScale,
-          )}
-          <Text style={[styles.label, lf]}>Button size</Text>
-          {chipRow(
-            BUTTON_SIZES.map(t => [t.scale, t.label] as [number, string]),
-            btnScale,
-            setBtnScale,
-          )}
-          <Text style={[styles.label, lf]}>Note toolbar side (snaps won't cover it)</Text>
-          {chipRow(TOOLBAR_SIDES, toolbarSide, setToolbarSide)}
-          {msg.length > 0 ? <Text style={styles.msg}>{msg}</Text> : null}
-          <View style={styles.bottomPad} />
-        </ScrollView>
-      </View>
-    );
+        <Text style={[styles.section, sf]}>Appearance</Text>
+        <Text style={[styles.label, lf]}>Text size</Text>
+        {chipRow(
+          TEXT_SIZES.map(t => [t.scale, t.label] as [number, string]),
+          scale,
+          setScale,
+        )}
+        <Text style={[styles.label, lf]}>Button size</Text>
+        {chipRow(
+          BUTTON_SIZES.map(t => [t.scale, t.label] as [number, string]),
+          btnScale,
+          setBtnScale,
+        )}
+        <Text style={[styles.label, lf]}>
+          Note toolbar side (snaps won't cover it)
+        </Text>
+        {chipRow(TOOLBAR_SIDES, toolbarSide, setToolbarSide)}
+        {msg.length > 0 ? <Text style={styles.msg}>{msg}</Text> : null}
+        <View style={styles.bottomPad} />
+      </ScrollView>
+    </View>
+  );
 }
-
 
 export default KeyAppScreen;

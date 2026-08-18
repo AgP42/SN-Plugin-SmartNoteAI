@@ -15,10 +15,18 @@ AGENTS are all available today.
 ## Privacy
 
 - **Fully open source** — audit it: github.com/AgP42/SN-Plugin-SmartNoteAI
-- **Mistral AI only**: a European company on European infrastructure. Your
-  data stays under EU jurisdiction (GDPR) and is processed in Europe,
-  protected from the US Cloud Act and the Chinese Data Security Law. On a
-  paid API plan, your requests are never used to train Mistral's models.
+- **Mistral AI only, EU inference**: a European company (GDPR), and since
+  v1.0.43 every request runs on Mistral's **EU regional endpoint** — your
+  pages are processed in Europe by contract, not by assumption, protected
+  from the US Cloud Act and the Chinese Data Security Law. EU regional
+  pricing (+10% on Mistral's list prices) is already included in every
+  estimate the plugin shows. On a paid API plan, your requests are never
+  used to train Mistral's models. The ONE deliberate exception: the
+  chat's optional **Web search** — Mistral does not offer web search on
+  regional inference (a web query leaves the region by nature), so that
+  single request uses their global endpoint, without a residency
+  guarantee. Its button is labeled **Web (non-EU)** so the trade-off is
+  always visible; everything else never leaves the EU endpoint.
 - **Bring your own key**: a direct link between your Supernote and your
   Mistral account; the key is kept in the plugin's private storage — never
   synced to the cloud, not in device backups.
@@ -40,11 +48,11 @@ are re-checked automatically when you write on them again.
 
 ### Modes — per folder or note, set in the Library
 
-| Mode | What it does |
-|---|---|
-| **Off** | Excluded from the AI: never read, no transcript stored. If you ask a chat question about an Off page, the plugin asks for one-shot consent, reads it once to answer, then discards the transcript (no memory). |
-| **Manual** (default) | Read and stored only on demand: the Library "Sync now" button, or a chat question about that page. |
-| **Auto** | New and changed pages are transcribed in the background, kept up to date, as you turn pages while the plugin runs (a periodic tick is the fallback). |
+| Mode                 | What it does                                                                                                                                                                                                   |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Off**              | Excluded from the AI: never read, no transcript stored. If you ask a chat question about an Off page, the plugin asks for one-shot consent, reads it once to answer, then discards the transcript (no memory). |
+| **Manual** (default) | Read and stored only on demand: the Library "Sync now" button, or a chat question about that page.                                                                                                             |
+| **Auto**             | New and changed pages are transcribed in the background, kept up to date, as you turn pages while the plugin runs (a periodic tick is the fallback).                                                           |
 
 Set a folder's mode and its notes inherit it (a note's own mode wins). The
 "Sync now" button and the "N pending" count cover the folders/notes you set
@@ -133,9 +141,11 @@ Magistral S/M. Any other model works in the free-text field, but the
 smaller ones (Ministral, Nemo) cannot run the connectors.
 
 - **Persona** (optional): shapes how the assistant answers.
-- **Web search** (one-shot button, ≈0.01€ per search): arm it and it
-  applies to your NEXT message only. Answers produced by a real web run
-  carry a **🌐 badge** and cite their sources.
+- **Web search** (one-shot button labeled **Web (non-EU)**, ≈0.01€ per
+  search): arm it and it applies to your NEXT message only. Answers
+  produced by a real web run carry a **🌐 badge** and cite their sources.
+  This is the plugin's one non-EU request (see Privacy): Mistral does not
+  offer web search on EU inference.
 - **No invented facts**: without Web armed, the assistant is told — for
   every message — that it has no live data: it will not present remembered
   knowledge as current, and it never cites or fabricates source links. For

@@ -21,8 +21,8 @@ export const READER_MODEL = 'ministral-14b-2512';
 
 // Per-page cost of the ministral vision call, in EURO cents. Official
 // list price ministral-14b: 0.2$/M in+out ≈ 0.875 €/M — measured
-// ~2.6k tokens in / ~150 out per page ≈ 0.05 c€.
-export const READ_COST_CENTS = 0.05;
+// ~2.6k tokens in / ~150 out per page ≈ 0.05 c€; × 1.1 EU regional.
+export const READ_COST_CENTS = 0.055;
 
 // The UI expresses reading cost as €/1000 PAGES (clearer than c€/page,
 // user decision 2026-07-13) and batch totals in €.

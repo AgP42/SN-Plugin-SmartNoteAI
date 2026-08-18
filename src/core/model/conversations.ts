@@ -10,7 +10,7 @@
 // it is cheaper (prompt caching) and battle-tested.
 
 import type {ChatRequest, ChatUsage, FetchFn} from './types';
-import {mistralRequest} from './http';
+import {mistralRequest, MISTRAL_API_GLOBAL} from './http';
 import {wireContent} from './mistral';
 
 export type ConnectorTool = 'web_search' | 'code_interpreter';
@@ -114,6 +114,10 @@ export const sendConversation = async (
 ): Promise<ConvResult> => {
   const start = Date.now();
   const r = await mistralRequest(fetchFn, apiKey, '/v1/conversations', {
+    // Web one-shot = the ONE global-endpoint call (see http.ts): the
+    // conversations API does not exist regionally (404) and connectors
+    // are refused there (error 1915) — the Web button says "non-EU".
+    base: MISTRAL_API_GLOBAL,
     body: buildConversationBody(req, model, tools),
     signal,
   });

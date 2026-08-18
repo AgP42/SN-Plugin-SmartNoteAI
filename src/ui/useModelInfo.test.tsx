@@ -80,7 +80,7 @@ describe('useModelInfo', () => {
     expect(info['mistral-small-latest'].vision).toBe(true);
     expect(info['magistral-small-latest'].dep).toBe('2027-01-01');
     expect(info['magistral-small-latest'].depRepl).toBe('magistral-small-2601');
-    expect(mockFetch).toHaveBeenCalledWith('https://api.mistral.ai/v1/models', {
+    expect(mockFetch).toHaveBeenCalledWith('https://api.eu.mistral.ai/v1/models', {
       headers: {Authorization: 'Bearer sk-key'},
     });
   });
@@ -110,7 +110,7 @@ describe('useModelInfo', () => {
     await flush();
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch).toHaveBeenLastCalledWith(
-      'https://api.mistral.ai/v1/models',
+      'https://api.eu.mistral.ai/v1/models',
       {headers: {Authorization: 'Bearer sk-new'}},
     );
   });

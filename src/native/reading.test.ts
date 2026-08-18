@@ -310,8 +310,8 @@ describe('readNotePages', () => {
     const out = await readNotePages(baseDeps(), 'key', '', NOTE, [0]);
     expect(out).toEqual({ok: true, read: 1, failed: [], storedPages: [0]});
     expect(fetchMock.mock.calls.map(c => c[0])).toEqual([
-      'https://api.mistral.ai/v1/ocr',
-      'https://api.mistral.ai/v1/chat/completions',
+      'https://api.eu.mistral.ai/v1/ocr',
+      'https://api.eu.mistral.ai/v1/chat/completions',
     ]);
     expect(fetchMock.mock.calls[1][1].body).toContain('--- hint ---');
     const e = getPage(storeState.store, NOTE, 0)!;
@@ -856,7 +856,7 @@ describe('R3 — reuse stored OCR on a vision retry (no re-pay)', () => {
     expect(out).toEqual({ok: true, read: 1, failed: [], storedPages: [0]});
     // Only the Vision leg was billed — no /v1/ocr at all.
     expect(fetchMock.mock.calls.map(c => c[0])).toEqual([
-      'https://api.mistral.ai/v1/chat/completions',
+      'https://api.eu.mistral.ai/v1/chat/completions',
     ]);
     // The reused OCR text rode as the vision hint.
     expect(fetchMock.mock.calls[0][1].body).toContain('stored ocr');

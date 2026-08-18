@@ -77,7 +77,7 @@ describe('sendChat', () => {
     const r = await sendChat(fetchFn, CONFIG, baseReq());
     expect(r.ok).toBe(true);
     const [url, init] = (fetchFn as jest.Mock).mock.calls[0];
-    expect(url).toBe('https://api.mistral.ai/v1/chat/completions');
+    expect(url).toBe('https://api.eu.mistral.ai/v1/chat/completions');
     expect(init.headers.Authorization).toBe('Bearer sk-test');
     if (r.ok) {
       expect(r.text).toBe('hi');

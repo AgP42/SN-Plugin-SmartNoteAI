@@ -693,6 +693,15 @@ GDPR: no training on your data on a paid plan, the data use is limited to answer
 request, real security duties, and enforceable rights (access, deletion) with
 regulators and heavy fines behind them. A legal framework that have demonstrated it's strenghts, not a settings toggle.
 
+Since Mistral introduced regional inference (August 2026), the plugin goes one step
+further: every request is sent to Mistral's **EU regional endpoint**, which contractually
+guarantees the inference itself runs in European data centers (their global endpoint no
+longer promises a location). EU regional pricing (+10%) is already included in every cost
+estimate the plugin displays. The one exception is the optional chat **Web search**:
+Mistral does not offer web search on regional inference — a web query leaves the region
+by nature — so that single request uses the global endpoint. The button is labeled
+**Web (non-EU)** so you always see the trade-off before arming it.
+
 Other jurisdictions work differently. In the US, the **CLOUD Act** lets
 authorities compel a US company to hand over data wherever it is stored, and
 **FISA (Foreign Intelligence Surveillance Act) Section 702** openly targets

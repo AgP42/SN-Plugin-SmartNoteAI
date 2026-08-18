@@ -71,9 +71,7 @@ export interface ChatAgentsScreenProps {
   // v0.81 lasso: image quick actions (max 3) shown only when a lasso image
   // is in context. Edited here in the CHAT entry.
   imageQuickActions: QuickActionItem[];
-  setImageQuickActions: React.Dispatch<
-    React.SetStateAction<QuickActionItem[]>
-  >;
+  setImageQuickActions: React.Dispatch<React.SetStateAction<QuickActionItem[]>>;
   goLibrary: () => void;
   quickActions: QuickActionItem[];
   setQuickActions: React.Dispatch<React.SetStateAction<QuickActionItem[]>>;
@@ -158,7 +156,8 @@ function QaEditor({
             <TouchableOpacity
               onPress={() => patch(i, {enabled: !a.enabled})}
               style={[local.qaToggle, a.enabled && styles.chipOn]}>
-              <Text style={[local.qaToggleText, a.enabled && styles.chipTextOn]}>
+              <Text
+                style={[local.qaToggleText, a.enabled && styles.chipTextOn]}>
                 {a.enabled ? 'ON' : 'off'}
               </Text>
             </TouchableOpacity>
@@ -194,7 +193,10 @@ function QaEditor({
       {list.length < MAX_QUICK_ACTIONS ? (
         <TouchableOpacity
           onPress={() =>
-            onChange([...list, {label: 'New action', prompt: '', enabled: true}])
+            onChange([
+              ...list,
+              {label: 'New action', prompt: '', enabled: true},
+            ])
           }
           style={[styles.smallBtn, styles.gapTop]}>
           <Text style={styles.smallBtnText}>+ Add action</Text>
@@ -399,7 +401,10 @@ function ChatAgentsScreen({
               : '⚠ SAVE FAILED: settings not writable',
           );
           if (!ok) {
-            console.log('[SmartNoteAI.agents]', 'SAVE FAILED (write returned false)');
+            console.log(
+              '[SmartNoteAI.agents]',
+              'SAVE FAILED (write returned false)',
+            );
           }
         })
         .catch(e => {
@@ -550,7 +555,9 @@ function ChatAgentsScreen({
     const open = openZones.has(key);
     return (
       <View key={key} style={local.zone}>
-        <TouchableOpacity onPress={() => toggleZone(key)} style={styles.zoneHead}>
+        <TouchableOpacity
+          onPress={() => toggleZone(key)}
+          style={styles.zoneHead}>
           <Text style={[local.zoneArrow, nf]}>{open ? '▾' : '▸'}</Text>
           <Text style={[local.zoneTitle, {fontSize: 14 * scale}]}>{title}</Text>
           {!open && summary.length > 0 ? (
@@ -574,7 +581,9 @@ function ChatAgentsScreen({
       key={key}
       onPress={() => select(key)}
       style={[styles.row, on && local.rowOn]}>
-      <Text style={[local.rowText, nf, on && local.rowTextOn]} numberOfLines={1}>
+      <Text
+        style={[local.rowText, nf, on && local.rowTextOn]}
+        numberOfLines={1}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -589,9 +598,9 @@ function ChatAgentsScreen({
     return (
       <>
         <Text style={[styles.manual, mf]}>
-          Any Mistral model works in the field below. The presets are the
-          ones that can use the chat's Web search tool. Default is Small:
-          open, cheap and on par with the big ones in our tests.
+          Any Mistral model works in the field below. The presets are the ones
+          that can use the chat's Web search tool. Default is Small: open, cheap
+          and on par with the big ones in our tests.
         </Text>
         <View style={local.modelRow}>
           <TextInput
@@ -601,13 +610,16 @@ function ChatAgentsScreen({
             autoCapitalize="none"
             autoCorrect={false}
             placeholder={DEFAULT_MODEL}
-           onFocus={scrollToFocused} />
+            onFocus={scrollToFocused}
+          />
           <Text style={[styles.modelNote, nf, local.modelSide]}>
             {modelInfo === null
               ? ''
               : curInfo === undefined
               ? '⚠ unknown model id (checked live against api.mistral.ai)'
-              : `"${curId}" currently points to ${curInfo.resolvedId ?? curId}` +
+              : `"${curId}" currently points to ${
+                  curInfo.resolvedId ?? curId
+                }` +
                 (curInfo.dep !== undefined
                   ? `\n⚠ deprecated ${curInfo.dep.slice(0, 10)}` +
                     (curInfo.depRepl !== undefined
@@ -634,9 +646,11 @@ function ChatAgentsScreen({
           ) : null;
         })()}
         <Text style={[styles.manual, mf, styles.gapTop]}>
-          Web search (~0.01€ per search) is a ONE-SHOT button in the chat
-          panel, next to Send: arm "Web" and it applies to your NEXT message
-          only. Web answers cite their sources.
+          Web search (~0.01€ per search) is a ONE-SHOT button in the chat panel,
+          next to Send: arm "Web (non-EU)" and it applies to your NEXT message
+          only. Web answers cite their sources. It is the plugin's one request
+          on Mistral's global endpoint — web search is not offered on EU
+          regional inference (see door 1, Privacy).
           {noTools
             ? ' This model does not support tools. Pick Small, Medium or Large to use them.'
             : ''}
@@ -646,8 +660,8 @@ function ChatAgentsScreen({
         </Text>
         <Text style={[styles.manual, mf]}>
           How freely the assistant words its answers. Precise sticks to the
-          facts with stable wording; Creative allows looser phrasing;
-          Balanced uses each model's own tuning.
+          facts with stable wording; Creative allows looser phrasing; Balanced
+          uses each model's own tuning.
         </Text>
         {chipRow(STYLE_CHIPS, answerStyle, setAnswerStyle)}
       </>
@@ -665,8 +679,9 @@ function ChatAgentsScreen({
           onChangeText={t => upd(a.id, {model: t})}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder={`${(model || DEFAULT_MODEL)} (CHAT default)`}
-         onFocus={scrollToFocused} />
+          placeholder={`${model || DEFAULT_MODEL} (CHAT default)`}
+          onFocus={scrollToFocused}
+        />
         {chipRow(
           MISTRAL_MODELS.map(m => [m.id, m.label] as [string, string]),
           a.model,
@@ -770,8 +785,10 @@ function ChatAgentsScreen({
               ),
             )}
             {wholeNotes.map(r =>
-              manifestRow(r, `📄 ${leaf(r)} · whole${isOff(r) ? ' · Off' : ''}`, () =>
-                upd(a.id, {docs: a.docs.filter(x => x !== r)}),
+              manifestRow(
+                r,
+                `📄 ${leaf(r)} · whole${isOff(r) ? ' · Off' : ''}`,
+                () => upd(a.id, {docs: a.docs.filter(x => x !== r)}),
               ),
             )}
             {pageEntries.map(([p, pg]) =>
@@ -796,22 +813,22 @@ function ChatAgentsScreen({
             + {pinnedPages} page(s) pinned individually.
           </Text>
         ) : null}
-      {estimate !== null ? (
-        <Text style={[styles.manual, mf, styles.gapTop]}>
-          {estimate.docs} doc(s) · {estimate.read} page(s) read
-          {estimate.unread > 0
-            ? ` (+${estimate.unread} not read yet, offered when you pick the agent)`
-            : ''}
-          {'\n'}~{Math.round(estimate.tokens / 1000)}k tokens of context
-          {estimate.firstMsgCents !== undefined
-            ? ` → 1st message ~${estimate.firstMsgCents} cents · next ~${estimate.nextMsgCents} cents (cached −90%)`
-            : ' · price unknown for this model id'}
-          {estimate.tokens > 100_000
-            ? '\n⚠ Larger than a 128k model context: trim the documents.'
-            : ''}
-          {'\n'}Less context = cheaper: half the pages ≈ half the price.
-        </Text>
-      ) : null}
+        {estimate !== null ? (
+          <Text style={[styles.manual, mf, styles.gapTop]}>
+            {estimate.docs} doc(s) · {estimate.read} page(s) read
+            {estimate.unread > 0
+              ? ` (+${estimate.unread} not read yet, offered when you pick the agent)`
+              : ''}
+            {'\n'}~{Math.round(estimate.tokens / 1000)}k tokens of context
+            {estimate.firstMsgCents !== undefined
+              ? ` → 1st message ~${estimate.firstMsgCents} cents · next ~${estimate.nextMsgCents} cents (cached −90%)`
+              : ' · price unknown for this model id'}
+            {estimate.tokens > 100_000
+              ? '\n⚠ Larger than a 128k model context: trim the documents.'
+              : ''}
+            {'\n'}Less context = cheaper: half the pages ≈ half the price.
+          </Text>
+        ) : null}
       </>
     );
   };
@@ -850,20 +867,20 @@ function ChatAgentsScreen({
           {/* v1.0.34 — same transparency as Door 2's assembled prompts: the
               REAL system prompt of a chat message, piece by piece. */}
           <TouchableOpacity onPress={() => setShowChatPrompt(v => !v)}>
-            <Text style={[styles.section, {fontSize: 16 * scale}, styles.gapTop]}>
+            <Text
+              style={[styles.section, {fontSize: 16 * scale}, styles.gapTop]}>
               {showChatPrompt ? '▾' : '▸'} Full prompt — what the chat sends
             </Text>
           </TouchableOpacity>
           {showChatPrompt ? (
             <>
               <Text style={[styles.manual, mf]}>
-                A chat message's system prompt is assembled from: your
-                Persona above, used AS-IS (empty = no base instructions —
-                nothing is substituted behind your back); when an agent is
-                active, its persona and its documents section instead; when
-                a lasso image is attached, the lasso directive (shown in
-                READ config); and ONE of the two lines below, matching the
-                Web button for THAT message.
+                A chat message's system prompt is assembled from: your Persona
+                above, used AS-IS (empty = no base instructions — nothing is
+                substituted behind your back); when an agent is active, its
+                persona and its documents section instead; when a lasso image is
+                attached, the lasso directive (shown in READ config); and ONE of
+                the two lines below, matching the Web button for THAT message.
               </Text>
               <Text style={[styles.label, {fontSize: 13 * scale}]}>
                 Web NOT armed (every normal message):
@@ -882,8 +899,8 @@ function ChatAgentsScreen({
                 </Text>
               </View>
               <Text style={[styles.modelNote, nf]}>
-                Answers produced by a real web run carry a 🌐 badge; no
-                badge means the answer came from the model's memory.
+                Answers produced by a real web run carry a 🌐 badge; no badge
+                means the answer came from the model's memory.
               </Text>
             </>
           ) : null}
@@ -891,7 +908,12 @@ function ChatAgentsScreen({
       ),
     ),
     zone('qa', 'Quick actions', qaSummary(quickActions), () => (
-      <QaEditor list={quickActions} onChange={setQuickActions} mf={mf} onInputFocus={scrollToFocused} />
+      <QaEditor
+        list={quickActions}
+        onChange={setQuickActions}
+        mf={mf}
+        onInputFocus={scrollToFocused}
+      />
     )),
   ];
 
@@ -974,7 +996,8 @@ function ChatAgentsScreen({
             placeholder={DEFAULT_SYSTEM}
             scale={scale}
             btnScale={btnScale}
-           onFocus={scrollToFocused} />
+            onFocus={scrollToFocused}
+          />
         </>
       ),
     ),
@@ -988,17 +1011,15 @@ function ChatAgentsScreen({
         a.quickActions === undefined ? (
           <>
             <Text style={[styles.manual, mf]}>
-              This agent uses the CHAT quick actions. Customize to give it
-              its own set (starts as a copy of the current ones).
+              This agent uses the CHAT quick actions. Customize to give it its
+              own set (starts as a copy of the current ones).
             </Text>
             <TouchableOpacity
               onPress={() =>
                 upd(a.id, {quickActions: quickActions.map(q => ({...q}))})
               }
               style={[styles.smallBtn, bp]}>
-              <Text style={styles.smallBtnText}>
-                Customize for this agent
-              </Text>
+              <Text style={styles.smallBtnText}>Customize for this agent</Text>
             </TouchableOpacity>
           </>
         ) : (
@@ -1036,13 +1057,12 @@ function ChatAgentsScreen({
       {subHeader('3 · CHAT & AGENTS: your assistants')}
       <ScrollView ref={scrollRef} contentContainerStyle={styles.body}>
         <Text style={[styles.manual, mf]}>
-          One page for every assistant. CHAT is the default one: its
-          persona, model, answer style and quick actions apply everywhere
-          unless an agent overrides them. An agent adds its own name and a
-          set of library documents it always has in mind; you pick it when
-          STARTING a conversation. Document text is read from your local
-          transcripts (free) and repeated context is billed at 10% after
-          the first message.
+          One page for every assistant. CHAT is the default one: its persona,
+          model, answer style and quick actions apply everywhere unless an agent
+          overrides them. An agent adds its own name and a set of library
+          documents it always has in mind; you pick it when STARTING a
+          conversation. Document text is read from your local transcripts (free)
+          and repeated context is billed at 10% after the first message.
         </Text>
 
         {/* v0.80.0 (audit M3): count what the cap actually caps — CUSTOM
@@ -1055,7 +1075,10 @@ function ChatAgentsScreen({
                 local.saveInfo,
                 nf,
                 // audit M7: a FAILED save must not whisper in grey.
-                saveInfo.startsWith('⚠') && {color: '#000000', fontWeight: '800'},
+                saveInfo.startsWith('⚠') && {
+                  color: '#000000',
+                  fontWeight: '800',
+                },
               ]}>
               {'   ' + saveInfo}
             </Text>
@@ -1070,18 +1093,17 @@ function ChatAgentsScreen({
           entryRow(
             a.id,
             `${a.icon} ${a.name} · ${shortModel(a.model.trim() || model)} · ${
-              resolveAgentDocs(a.docs, lib.map(d => d.path)).filter(
-                p => !isOff(p),
-              ).length
+              resolveAgentDocs(
+                a.docs,
+                lib.map(d => d.path),
+              ).filter(p => !isOff(p)).length
             } doc(s)`,
             selKey === a.id,
           ),
         )}
         {agents.length < MAX_AGENTS ? (
           <View style={local.addRow}>
-            <TouchableOpacity
-              onPress={addAgent}
-              style={[styles.smallBtn, bp]}>
+            <TouchableOpacity onPress={addAgent} style={[styles.smallBtn, bp]}>
               <Text style={styles.smallBtnText}>+ New agent</Text>
             </TouchableOpacity>
             <InlineMenu

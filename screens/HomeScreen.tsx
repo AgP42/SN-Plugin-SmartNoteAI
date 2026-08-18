@@ -58,7 +58,11 @@ function HomeScreen({
     <View style={styles.root}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <Image source={APP_ICON} style={styles.titleIcon} resizeMode="contain" />
+          <Image
+            source={APP_ICON}
+            style={styles.titleIcon}
+            resizeMode="contain"
+          />
           <Text style={styles.title}>SmartNote AI</Text>
         </View>
         {headerRight()}
@@ -69,14 +73,14 @@ function HomeScreen({
         <Text style={[styles.manual, mf]}>
           Your Supernote in the age of AI — privacy first!{'\n'}
           Two ways to use it:{'\n'}
-          <Text style={styles.b}>① Just ask.</Text> Open the floating
-          assistant on any note and ask the AI about the page, a range of
-          pages or the full note; or lasso a part of it for a quick question.
-          The transcription will be generated live.{'\n'}
-          <Text style={styles.b}>② Build a library (READ).</Text>{' '}
-          You can also transcribe a selection of your notes and PDFs into a
-          local library, this will open up more features: powerful SEARCH, AI
-          AGENTS that know your documents, and EXPORT.
+          <Text style={styles.b}>① Just ask.</Text> Open the floating assistant
+          on any note and ask the AI about the page, a range of pages or the
+          full note; or lasso a part of it for a quick question. The
+          transcription will be generated live.{'\n'}
+          <Text style={styles.b}>② Build a library (READ).</Text> You can also
+          transcribe a selection of your notes and PDFs into a local library,
+          this will open up more features: powerful SEARCH, AI AGENTS that know
+          your documents, and EXPORT.
         </Text>
         <View style={styles.treeWrap}>
           <View style={[styles.treeBox, styles.treeBoxOn]}>
@@ -100,23 +104,25 @@ function HomeScreen({
         </View>
         <Text style={[styles.manual, mf]}>
           <Text style={styles.b}>READ</Text>: transcribe notes and PDFs with
-          Mistral OCR 4 + Ministral 14B Vision; correct anything by hand.
-          Three modes per folder or note/PDF: Auto, Manual, Off.{'\n'}
+          Mistral OCR 4 + Ministral 14B Vision; correct anything by hand. Three
+          modes per folder or note/PDF: Auto, Manual, Off.{'\n'}
           <Text style={styles.b}>CHAT</Text>: ask any Mistral model about a
           page, a range or the whole note; add any extra context, or lasso a
           zone for a quick question.{'\n'}
-          <Text style={styles.b}>AI AGENTS</Text>: custom chats with
-          their own persona, model and library documents.{'\n'}
-          <Text style={styles.b}>SEARCH</Text>: powerful search into your
-          local transcripts.{'\n'}
-          <Text style={styles.b}>EXPORT</Text>: export your local transcripts
-          in .md or .txt.{'\n\n'}
-          <Text style={styles.b}>Privacy first</Text>: open source plugin,
-          AI from Mistral AI only (EU/GDPR, a paid plan never trains on your
-          data, nothing stored on their servers), your own key kept in the
-          plugin's private storage, transcripts local-only. Anyhow, do not
-          share confidential
-          information.{'\n\n'}
+          <Text style={styles.b}>AI AGENTS</Text>: custom chats with their own
+          persona, model and library documents.{'\n'}
+          <Text style={styles.b}>SEARCH</Text>: powerful search into your local
+          transcripts.{'\n'}
+          <Text style={styles.b}>EXPORT</Text>: export your local transcripts in
+          .md or .txt.{'\n\n'}
+          <Text style={styles.b}>Privacy first</Text>: open source plugin, AI
+          from Mistral AI only, running on Mistral's EU endpoint (your pages are
+          processed in Europe; a paid plan never trains on your data, nothing
+          stored on their servers), your own key kept in the plugin's private
+          storage, transcripts local-only. One deliberate exception: the chat's
+          optional Web search runs on Mistral's global endpoint (Mistral does
+          not offer web search regionally) — its button is labeled non-EU.
+          Anyhow, do not share confidential information.{'\n\n'}
           Guide and sources: github.com/AgP42/SN-Plugin-SmartNoteAI
         </Text>
 
@@ -169,11 +175,11 @@ function HomeScreen({
         <View style={styles.kofiRow}>
           <View style={styles.kofiTextWrap}>
             <Text style={[styles.kofiText, nf]}>
-              SmartNote AI is a personal project built by a Supernote user,
-              for Supernote users. It is not an official product of
-              Supernote or Mistral AI, just a plugin that loves them both.
-              I built it with love, time, skills and expensive tokens ;-)
-              If you like it, please consider a small contribution:
+              SmartNote AI is a personal project built by a Supernote user, for
+              Supernote users. It is not an official product of Supernote or
+              Mistral AI, just a plugin that loves them both. I built it with
+              love, time, skills and expensive tokens ;-) If you like it, please
+              consider a small contribution:
             </Text>
             <Text selectable style={[styles.kofiLink, nf]}>
               https://ko-fi.com/agp42
@@ -187,7 +193,14 @@ function HomeScreen({
 }
 
 const local = StyleSheet.create({
-  titleRow: {flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8},
+  titleRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginRight: 8,
+  },
   titleIcon: {width: 30, height: 30},
   footer: {
     borderTopWidth: 1,
@@ -197,8 +210,21 @@ const local = StyleSheet.create({
     paddingBottom: 16,
     backgroundColor: '#ffffff',
   },
-  status: {fontSize: 13, color: '#000000', lineHeight: 19, marginTop: 14, marginBottom: 6},
-  navBtn: {marginTop: 12, borderWidth: 2, borderColor: '#000000', borderRadius: 10, backgroundColor: '#ffffff', paddingHorizontal: 14},
+  status: {
+    fontSize: 13,
+    color: '#000000',
+    lineHeight: 19,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  navBtn: {
+    marginTop: 12,
+    borderWidth: 2,
+    borderColor: '#000000',
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 14,
+  },
   navBtnText: {color: '#000000', fontWeight: '700'},
   kofiRow: {
     flexDirection: 'row',

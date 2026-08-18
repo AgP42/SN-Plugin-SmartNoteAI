@@ -8,6 +8,7 @@
 // work, just without the live lines.
 
 import {useEffect, useRef, useState} from 'react';
+import {MISTRAL_API} from '../core/model/http';
 
 export type ModelInfo = {
   resolvedId?: string;
@@ -40,7 +41,7 @@ export const useModelInfo = (
     }
     (async () => {
       try {
-        const res = await fetch('https://api.mistral.ai/v1/models', {
+        const res = await fetch(`${MISTRAL_API}/v1/models`, {
           headers: {Authorization: `Bearer ${apiKey}`},
         });
         if (!res.ok) {

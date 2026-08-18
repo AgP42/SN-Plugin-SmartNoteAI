@@ -11,7 +11,15 @@ import type {FetchFn} from './types';
 import {rateAcquire, rateReport, ratePaceMs} from './rateGovernor';
 import {sleepVia} from './sleepImpl';
 
-export const MISTRAL_API = 'https://api.mistral.ai';
+// EU-ONLY MIGRATION (user decision 2026-08-18, after Mistral's regional
+// inference launch): every call runs on the EU regional endpoint — data
+// residency in Europe, 1.1x list pricing (the static price tables carry
+// the multiplier). The ONE exception is the Web one-shot: Mistral blocks
+// built-in connectors on regional inference (error 1915, measured
+// 2026-08-18 — a web search leaves the region by nature), so the
+// conversations call keeps the global endpoint and its button says so.
+export const MISTRAL_API = 'https://api.eu.mistral.ai';
+export const MISTRAL_API_GLOBAL = 'https://api.mistral.ai';
 
 // One retry only — enough for a wifi hiccup, never a spend multiplier
 // (a request that got THROUGH and failed 4xx is not retried).
@@ -59,6 +67,9 @@ export const mistralRequest = async (
     method?: 'POST' | 'GET';
     body?: Record<string, unknown>;
     signal?: AbortSignal;
+    // Endpoint override — ONLY the Web one-shot passes the global host
+    // (see MISTRAL_API_GLOBAL above); everything else runs EU.
+    base?: string;
     // Wording of a user-initiated abort / our own timeout (the OCR path
     // says "OCR cancelled.", the chat says "Request timed out.").
     abortReason?: string;
@@ -94,7 +105,7 @@ export const mistralRequest = async (
     });
     let res;
     try {
-      res = await fetchFn(`${MISTRAL_API}${path}`, {
+      res = await fetchFn(`${opts.base ?? MISTRAL_API}${path}`, {
         method: opts.method ?? 'POST',
         headers: {
           'Content-Type': 'application/json',

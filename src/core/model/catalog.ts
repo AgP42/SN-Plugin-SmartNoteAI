@@ -46,8 +46,8 @@ export const MISTRAL_MODELS: CatalogEntry[] = [
   {
     id: 'mistral-small-latest',
     label: 'Small',
-    note: 'open weights · 0.13/0.53 €/M · default',
-    inEurPerM: 0.13,
+    note: 'open weights · 0.14/0.58 €/M (EU) · default',
+    inEurPerM: 0.143,
     desc:
       'Mistral Small 4\nOur powerful hybrid model unifying instruct, ' +
       'reasoning, and coding capabilities in a single model. 119B ' +
@@ -56,8 +56,8 @@ export const MISTRAL_MODELS: CatalogEntry[] = [
   {
     id: 'mistral-medium-latest',
     label: 'Medium',
-    note: 'open weights (Modified MIT) · 1.31/6.56 €/M · priciest output',
-    inEurPerM: 1.31,
+    note: 'open weights (Modified MIT) · 1.44/7.22 €/M (EU) · priciest output',
+    inEurPerM: 1.441,
     desc:
       'Mistral Medium 3.5\nOur frontier-class multimodal model optimized ' +
       'for agentic and coding use cases. Released as open weights under a ' +
@@ -66,8 +66,8 @@ export const MISTRAL_MODELS: CatalogEntry[] = [
   {
     id: 'mistral-large-latest',
     label: 'Large',
-    note: 'open weights · 0.44/1.31 €/M · top quality',
-    inEurPerM: 0.44,
+    note: 'open weights · 0.48/1.44 €/M (EU) · top quality',
+    inEurPerM: 0.484,
     desc:
       'Mistral Large 3\nMistral Large 3, is a state-of-the-art, ' +
       'open-weight, general-purpose multimodal model with a granular ' +

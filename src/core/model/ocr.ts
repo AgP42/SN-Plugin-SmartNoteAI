@@ -24,8 +24,9 @@ import {mistralRequest} from './http';
 
 export const OCR_MODEL = 'mistral-ocr-latest';
 
-// EURO cents per page (official list 2026-07-11: 3.5 €/1000).
-export const OCR_COST_CENTS = 0.35;
+// EURO cents per page (list 3.5 €/1000 × 1.1 EU regional = 3.85 €/1000,
+// as of 2026-08-18 — every call now runs on the EU endpoint).
+export const OCR_COST_CENTS = 0.385;
 
 /* ---------------- shared parsing helpers ---------------- */
 
@@ -97,12 +98,10 @@ const wordStats = (
   const low = words.filter(w => Number(w.confidence) < 0.8);
   return {
     words: words.length,
-    lowWords: low
-      .slice(0, MAX_LOW_WORDS)
-      .map(w => ({
-        t: String(w.text).trim(),
-        c: Math.round(Number(w.confidence) * 100) / 100,
-      })),
+    lowWords: low.slice(0, MAX_LOW_WORDS).map(w => ({
+      t: String(w.text).trim(),
+      c: Math.round(Number(w.confidence) * 100) / 100,
+    })),
   };
 };
 
@@ -225,7 +224,10 @@ export const ocrImageSmart = async (
   // Bare OCR: the page markdown IS the transcription (docs: "the main
   // output"). The glossary rides on the vision escalation, not here — the
   // annotation stage was dropped 2026-07-15 (JSON-prone, net-zero gain).
-  const text = mergeTables(cleanMarkdown(String(page0.markdown ?? '')), page0.tables);
+  const text = mergeTables(
+    cleanMarkdown(String(page0.markdown ?? '')),
+    page0.tables,
+  );
   return {
     ok: true,
     text,

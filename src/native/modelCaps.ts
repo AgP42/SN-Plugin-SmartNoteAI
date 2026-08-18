@@ -5,12 +5,16 @@
 // buttons. Falls back to `undefined` (caller uses the static
 // modelLacksTools list) when offline or before the fetch lands.
 
+import {MISTRAL_API_GLOBAL} from '../core/model/http';
+
 let capsP: Promise<Map<string, boolean>> | null = null;
 
 const fetchCaps = async (apiKey: string): Promise<Map<string, boolean>> => {
   const map = new Map<string, boolean>();
   try {
-    const res = await fetch('https://api.mistral.ai/v1/models', {
+    // GLOBAL endpoint on purpose: this flag gates the Web one-shot,
+    // which runs globally (connectors are blocked on regional inference).
+    const res = await fetch(`${MISTRAL_API_GLOBAL}/v1/models`, {
       headers: {Authorization: `Bearer ${apiKey}`},
     });
     if (!res.ok) {

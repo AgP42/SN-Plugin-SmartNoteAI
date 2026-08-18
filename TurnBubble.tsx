@@ -3,7 +3,12 @@
 // VERBATIM from ChatPanel's turn map (UI refactor Lot 3, 2026-08-03).
 // Pure render: the scroll anchoring (onLayout y) stays with the parent.
 import React from 'react';
-import {Text, TouchableOpacity, View, type LayoutChangeEvent} from 'react-native';
+import {
+  Text,
+  TouchableOpacity,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
 import type {PanelStyles} from './panelStyles';
 import type {ChatTurn} from './src/core/model/types';
 import MarkdownView from './MarkdownView';
@@ -36,15 +41,15 @@ export function TurnBubble(props: {
         </Text>
       ) : (
         <>
-        {t.web === true ? (
-          <Text style={styles.webBadge}>🌐 web</Text>
-        ) : null}
-        <MarkdownView
-          text={t.text}
-          scale={props.scale}
-          baseStyle={styles.bubbleText}
-          selectable
-        />
+          {t.web === true ? (
+            <Text style={styles.webBadge}>🌐 web · non-EU</Text>
+          ) : null}
+          <MarkdownView
+            text={t.text}
+            scale={props.scale}
+            baseStyle={styles.bubbleText}
+            selectable
+          />
         </>
       )}
       {t.role === 'assistant' ? (

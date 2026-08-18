@@ -28,7 +28,10 @@ describe('buildConversationBody', () => {
     };
     expect(b.instructions).toBe('Be brief.');
     expect(b.inputs).toHaveLength(3);
-    expect(b.inputs[2]).toEqual({role: 'user', content: 'what is the BTC price?'});
+    expect(b.inputs[2]).toEqual({
+      role: 'user',
+      content: 'what is the BTC price?',
+    });
     expect(b.tools).toEqual([{type: 'web_search'}]);
     expect(b.store).toBe(false);
     expect(b.completion_args.max_tokens).toBe(512);
@@ -49,7 +52,11 @@ describe('parseConversationOutputs', () => {
           type: 'message.output',
           content: [
             {type: 'text', text: 'BTC is at 64k'},
-            {type: 'tool_reference', title: 'TradingView', url: 'https://tv.com'},
+            {
+              type: 'tool_reference',
+              title: 'TradingView',
+              url: 'https://tv.com',
+            },
             {type: 'text', text: ' today.'},
             {type: 'tool_reference', title: 'dup', url: 'https://tv.com'},
           ],
@@ -72,21 +79,40 @@ describe('parseConversationOutputs', () => {
 
 describe('sendConversation', () => {
   it('POSTs and folds connector_tokens into inputTokens', async () => {
-    const fn: FetchFn = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        outputs: [{type: 'message.output', content: 'answer'}],
-        usage: {prompt_tokens: 300, completion_tokens: 50, connector_tokens: 7000},
-      }),
-      text: async () => '',
-    });
-    const r = await sendConversation(fn, 'K', 'mistral-medium-latest', ['web_search'], REQ);
+    let calledUrl = '';
+    const fn: FetchFn = async (url: string) => {
+      calledUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          outputs: [{type: 'message.output', content: 'answer'}],
+          usage: {
+            prompt_tokens: 300,
+            completion_tokens: 50,
+            connector_tokens: 7000,
+          },
+        }),
+        text: async () => '',
+      };
+    };
+    const r = await sendConversation(
+      fn,
+      'K',
+      'mistral-medium-latest',
+      ['web_search'],
+      REQ,
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.usage.inputTokens).toBe(7300);
       expect(r.text).toBe('answer');
     }
+    // EU-only migration (2026-08-18): the Web one-shot is THE deliberate
+    // exception — conversations must stay on the GLOBAL endpoint (the
+    // API 404s regionally and connectors are refused there, error 1915).
+    // Everything else pins api.eu.mistral.ai in its own tests.
+    expect(calledUrl).toBe('https://api.mistral.ai/v1/conversations');
   });
   it('reports HTTP failures without throwing', async () => {
     const fn: FetchFn = async () => ({

@@ -2699,7 +2699,7 @@ export default function ChatPanel({
             (!toolsOk || busy) && styles.oneShotOff,
           ]}>
           <Text style={[styles.oneShotText, armWeb && styles.oneShotTextOn]}>
-            Web
+            Web (non-EU)
           </Text>
         </TouchableOpacity>
         {busy ? (
